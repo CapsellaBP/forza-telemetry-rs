@@ -1,0 +1,27 @@
+node_modules/
+__pycache__/
+*.pyc
+hud-settings.json
+hud-config.json
+hud/
+.npm-cache/
+.DS_Store
+target/
+dist/
+dist-ssr/
+*.local
+*.log
+tools/*.bin
+tools/*.json
+car_curves.json
+LSP-FIX-NOTES.md
+CLAUDE.md
+.claude/
+# Tauri 之前的遗留原型, 与正式产品无关, 不上传
+capture.py
+dashboard.py
+server.py
+web/
+# 测试工具, 本地保留不进仓库
+tools/replay_udp.py
+tools/ws_smoke.mjs
