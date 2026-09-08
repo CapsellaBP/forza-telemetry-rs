@@ -127,8 +127,10 @@ cargo tauri build
 
 > **注意**：必须通过 `cargo tauri build`（或 `npm run tauri build`）构建。裸 `cargo build --release` 产物未内嵌前端资源，会指向 devUrl 而无法独立运行。构建前需关闭正在运行的 exe（Windows 锁定文件）。
 
-### WebView2 软件渲染（勿删配置）
+### WebView2 渲染模式（启动前决定，切换需重启）
 
-`tauri.conf.json` 的 `additionalBrowserArgs: "--disable-gpu ..."` 配置 WebView2 软件渲染。HUD 窗口经 lib.rs 从主窗口配置继承同参数。勿当作无用配置清理。
+`lib.rs` 的 `run()` 在创建任何窗口前按 `hud-settings.json` 的 `render_mode` 注入进程级环境变量 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`（`software` 附加 `--disable-gpu`）。WebView2 在进程启动时读取该变量，主窗口与 HUD 窗口自动继承。因此渲染模式只能在启动前决定，切换设置必须重启应用生效；`restart_app` 命令走 `AppHandle::restart()` 真重启。`tauri.conf.json` 中不再有 `additionalBrowserArgs`。auto 裁决逻辑在 server.rs UDP 实时循环（仅实时包路径，回放不触发）。
+
+`restart_app` 仅重启 exe 进程本身。dev 模式（`cargo tauri dev`）下面板内容由 vite 开发服务器（localhost:1420）提供，重启不会拉起 vite，原 dev 会话终止后重启的实例会报"localhost 拒绝连接"——渲染模式切换功能请用 release exe 测试。
 
 修改 `tauri.conf.json` 后若 `cargo check` 秒回 Finished（增量指纹未触发重编译），用 `cargo clean -p forza-telemetry-rs` 强制重编译验证配置。

@@ -17,6 +17,9 @@ car_curves.json
 LSP-FIX-NOTES.md
 CLAUDE.md
 .claude/
+# Kimi Code 本地配置/会话残留预防 (会话数据本在用户目录, 保险起见)
+.kimi/
+.kimi-code/
 # Tauri 之前的遗留原型, 与正式产品无关, 不上传
 capture.py
 dashboard.py

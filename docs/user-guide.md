@@ -54,7 +54,7 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 | 悬挂 | 四轮行程示波器 + 胶囊柱状图 + 颜色阈值 |
 | G值 | G-G 拖尾轨迹图 + 总G平滑 |
 | 录制 | 自由录制/定时录制 + 文件管理 + 回放控制 |
-| 设置 | 曲线采样参数 + 增压稳定 + EV检测 + UDP端口 |
+| 设置 | 曲线采样参数 + 增压稳定 + EV检测 + 渲染模式 + UDP端口 |
 
 ### HUD 浮层
 
@@ -65,6 +65,10 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 - 编辑模式：点击"激活 HUD"可拖动窗口、调整大小，黄色虚线框表示编辑中
 - 停车自动隐藏，起步恢复显示
 - 点击"停止 HUD"关闭浮层，位置自动保存
+
+### 渲染模式
+
+设置页可切换三种渲染模式：自动 / 软件渲染 / 硬件渲染，切换后应用自动重启生效。自动模式按检测到的游戏选择：Motorsport 用软件渲染，Horizon 用硬件渲染。回放不触发自动切换。
 
 ### 换挡建议
 
@@ -152,7 +156,7 @@ The left sidebar has 8 tabs:
 | Suspension | 4-wheel oscilloscopes + staggered bar chart + color thresholds |
 | G-Force | G-G trail plot + total G smoothing |
 | Record | Free/timed recording + file management + playback controls |
-| Settings | Curve sampling + boost stable + EV detection + UDP port |
+| Settings | Curve sampling + boost stable + EV detection + render mode + UDP port |
 
 ### HUD Overlay
 
@@ -163,6 +167,10 @@ The left sidebar has 8 tabs:
 - Edit mode: click "Activate HUD" to drag and resize the window (yellow dashed border)
 - Auto-hides when parked, reappears when moving
 - Click "Stop HUD" to close — position is saved automatically
+
+### Render Mode
+
+The Settings tab offers three render modes: Auto / Software / Hardware. Switching restarts the app automatically. In Auto mode the tool picks per detected game: Motorsport → software rendering, Horizon → hardware rendering. Playback does not trigger an automatic switch.
 
 ### Shift Advisor
 

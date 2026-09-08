@@ -15,8 +15,7 @@
         "label": "main",
         "title": "Forza Telemetry RS",
         "width": 1270,
-        "height": 820,
-        "additionalBrowserArgs": "--disable-gpu --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
+        "height": 820
       }
     ],
     "security": {

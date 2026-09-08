@@ -98,13 +98,9 @@ fn start_hud(app: tauri::AppHandle, state: tauri::State<HudState>) -> Result<(),
         .title("Forza HUD").inner_size(cfg.w.unwrap_or(800.0), cfg.h.unwrap_or(150.0))
         .transparent(true).decorations(false).always_on_top(true).skip_taskbar(true)
         .resizable(false).shadow(false).visible(true);
-    // HUD uses the same browser args as the main window (software rendering, see tauri.conf.json)
-    if let Some(args) = app.config().app.windows.iter()
-        .find(|w| w.label == "main")
-        .and_then(|w| w.additional_browser_args.clone())
-    {
-        builder = builder.additional_browser_args(&args);
-    }
+    // Render mode is decided process-wide at startup: run() injects
+    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS based on render_mode, and every
+    // WebView2 window (main + HUD) inherits it automatically.
     if let (Some(x), Some(y)) = (cfg.x, cfg.y) { builder = builder.position(x, y); }
     let window = builder.build().map_err(|e| format!("build: {e}"))?;
     window.set_ignore_cursor_events(true).map_err(|e| format!("cursor: {e}"))?;
@@ -171,7 +167,7 @@ fn hud_edit_mode(state: tauri::State<HudState>) -> Result<bool, String> {
 #[tauri::command]
 fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     save_hud_cfg(&app);
-    std::process::exit(0);
+    app.restart()
 }
 
 #[tauri::command]
@@ -364,6 +360,13 @@ fn resume_playback(state: tauri::State<HudState>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Render mode must be decided before any WebView2 window is created:
+    // the flag is process-wide and read at WebView2 process startup.
+    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    if server::effective_render_mode() == "software" { args.push_str(" --disable-gpu"); }
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &args);
+    println!("[FT] WebView2 args: {args}");
+
     let edit_mode = Arc::new(AtomicBool::new(false));
     let recording = Arc::new(AtomicBool::new(false));
     let playing = Arc::new(AtomicBool::new(false));

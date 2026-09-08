@@ -59,6 +59,28 @@ pub fn resolve_path(rel: &str) -> String {
     }
 }
 
+/// Whether the current process actually runs WebView2 in software rendering.
+/// Decided once at startup from effective_render_mode(); the auto arbitration
+/// in the UDP loop compares against this.
+pub static ACTIVE_SOFTWARE_RENDER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 读取 hud-settings.json 计算本次启动实际生效的渲染模式。
+/// auto 解析为 render_mode_effective（缺省 software）。返回 "software" | "hardware"。
+pub fn effective_render_mode() -> &'static str {
+    let v: Option<serde_json::Value> = std::fs::read_to_string(resolve_path("hud-settings.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+    let mode = v.as_ref().and_then(|v| v.get("render_mode")).and_then(|m| m.as_str());
+    match mode {
+        Some("hardware") => "hardware",
+        Some("auto") => match v.as_ref().and_then(|v| v.get("render_mode_effective")).and_then(|m| m.as_str()) {
+            Some("hardware") => "hardware",
+            _ => "software",
+        },
+        _ => "software",
+    }
+}
+
 #[derive(Clone)]
 pub struct State {
     pub raw: HashMap<String, f64>,
@@ -100,6 +122,7 @@ impl Default for State {
                 "rpm_bar_width": 260,
                 "boost_stable_sample": false, "boost_stable_frames": 30, "boost_stable_tol": 0.90,
                 "udp_port": 5300,
+                "render_mode": "software",
 
 
                 "susp_thr1": 0.30, "susp_thr2": 0.55, "susp_thr3": 0.80,
@@ -279,13 +302,30 @@ async fn run(
     }
     let udp_port = state.read().await.settings.get("udp_port").and_then(|v| v.as_u64()).unwrap_or(5300) as u16;
     println!("[FT] Port from settings: {udp_port}");
+    ACTIVE_SOFTWARE_RENDER.store(effective_render_mode() == "software", Ordering::SeqCst);
     let udp_bind = format!("127.0.0.1:{udp_port}");
+    let udp_cmd_tx = cmd_tx.clone();
     tokio::spawn(async move {
         println!("[FT] UDP spawn STARTED");
-        let sock = match tokio::net::UdpSocket::bind(&udp_bind).await {
-            Ok(s) => s,
-            Err(e) => { eprintln!("[FT] UDP {udp_bind} in use — is another instance running?"); eprintln!("[FT] Error: {e}"); return; }
+        // app.restart() spawns the new process before the old one exits, so
+        // the new instance can race the old one for the port. Retry briefly
+        // (20 × 250ms) to let the old process release it.
+        let mut udp_retries = 0u32;
+        let sock = loop {
+            match tokio::net::UdpSocket::bind(&udp_bind).await {
+                Ok(s) => break s,
+                Err(e) => {
+                    if udp_retries >= 20 {
+                        eprintln!("[FT] UDP {udp_bind} in use — is another instance running?");
+                        eprintln!("[FT] Error: {e}");
+                        return;
+                    }
+                    udp_retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            }
         };
+        if udp_retries > 0 { println!("[FT] UDP {udp_bind} bound after {udp_retries} retries"); }
         println!("[FT] UDP {udp_bind} | WS {WS_ADDR}");
         let mut buf = [0u8; 4096];
         let mut file_open = false;
@@ -450,7 +490,30 @@ async fn run(
                         let mut s = udp_state.write().await;
                         s.raw = pkt;
                         s.packet_count += 1;
+                        let prev_game = s.game.clone();
                         s.game = if n == 331 { "motorsport".into() } else { "horizon".into() };
+                        // Render mode auto arbitration: only on live packets, only
+                        // when the game family changes, only in "auto" mode. Writes
+                        // render_mode_effective and restarts when the preferred mode
+                        // differs from the active one. On restart the modes match,
+                        // so no restart loop.
+                        if s.game != prev_game
+                            && s.settings.get("render_mode").and_then(|v| v.as_str()) == Some("auto")
+                        {
+                            let preferred = if s.game == "motorsport" { "software" } else { "hardware" };
+                            if (preferred == "software") != ACTIVE_SOFTWARE_RENDER.load(Ordering::SeqCst) {
+                                if let Some(obj) = s.settings.as_object_mut() {
+                                    obj.insert("render_mode_effective".into(), serde_json::Value::String(preferred.into()));
+                                }
+                                let json = serde_json::to_string(&s.settings).unwrap_or_default();
+                                match std::fs::write(resolve_path("hud-settings.json"), &json) {
+                                    Ok(_) => {},
+                                    Err(e) => eprintln!("[FT] Failed to save settings: {e}"),
+                                }
+                                println!("[FT] render_mode auto → {preferred} (game: {}), restarting app", s.game);
+                                let _ = udp_cmd_tx.send("restart_app".to_string());
+                            }
+                        }
                         // Write to recording file (only packets matching the
                         // recording's format — a mid-recording game switch
                         // can't corrupt the file)
@@ -476,10 +539,23 @@ async fn run(
     let ws_adv = adv.clone();
     let br_save = ws_save.clone();
     tokio::spawn(async move {
-        let listener = match TcpListener::bind(WS_ADDR).await {
-            Ok(l) => l,
-            Err(e) => { eprintln!("[FT] WS bind failed: {e}"); return; }
+        // Same restart race as the UDP bind: retry while the old process
+        // still holds the port (20 × 250ms).
+        let mut ws_retries = 0u32;
+        let listener = loop {
+            match TcpListener::bind(WS_ADDR).await {
+                Ok(l) => break l,
+                Err(e) => {
+                    if ws_retries >= 20 {
+                        eprintln!("[FT] WS bind failed after {ws_retries} retries: {e}");
+                        return;
+                    }
+                    ws_retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            }
         };
+        if ws_retries > 0 { println!("[FT] WS {WS_ADDR} bound after {ws_retries} retries"); }
         loop {
             if let Ok((stream, _)) = listener.accept().await {
                 set_tcp_keepalive(&stream);

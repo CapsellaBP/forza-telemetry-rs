@@ -107,6 +107,12 @@
 |------|------|------|------|
 | `udp_port` | 5300 | 1024-65535 | UDP 监听端口。修改后需保存并手动重启。游戏内 Data Out 端口需一致 |
 
+### 渲染模式
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `render_mode` | software | `auto` / `software` / `hardware`。切换后应用自动重启生效。`auto` 按检测到的游戏选择：Motorsport→software，Horizon→hardware；仅在实时 UDP 数据到达时裁决，回放不触发 |
+
 ## 每车预设
 
 换车时自动保存旧车曲线 + 加载新车曲线。曲线数据、锁定状态随车。存盘文件 `car_curves.json`。
