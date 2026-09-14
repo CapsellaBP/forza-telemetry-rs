@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <style>
-  :root { --hud-opacity: 0.70; }
+  :root { --hud-opacity: 0.70; --hud-vis: 1; --glow: 1; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; background: transparent !important; overflow: hidden; user-select: none; }
   body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
@@ -12,71 +12,254 @@
     outline: 2px dashed rgba(255,204,0,0.5); outline-offset: -2px;
   }
 
+  /* Static backdrop layer: canvas-painted rounded-rect plate with curvature-
+     eased corners and a narrow exponential alpha ramp fully contained in the
+     window (no border clipping, no muddy blur). Painted once, repainted only
+     on resize / radius change. z-index:-1 pins it below #hud even when
+     hud_opacity=1.0. Sibling of #hud — never a parent — so per-frame content
+     updates never re-rasterize it. */
+  #backdrop {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; opacity: 0; z-index: -1;
+    transition: opacity 0.5s;
+  }
+
+  /* #hud opacity = visibility only (show/hide fade). User opacity
+     (--hud-opacity) applies to TEXT elements only — the rpm bar, marker
+     lines, power band and glows stay at full brightness (legacy HUD
+     behavior: hud_opacity never dimmed the indicators). */
   #hud {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    height: 100%; opacity: var(--hud-opacity); transition: opacity 0.5s;
+    height: 100%; opacity: var(--hud-vis); transition: opacity 0.5s;
   }
+  /* zoom scales layout WITHOUT creating a stacking context (unlike transform),
+     so glow elements can additively blend (plus-lighter) with the backdrop
+     plate below them — light adds to the mask instead of being dulled by it.
+     G-float uses left/top (position:relative, also no stacking context). */
+  #hud-inner { display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
   #top-row { display: flex; align-items: baseline; justify-content: center; gap: 6px; margin-bottom: 6px; }
-  #gear { line-height: 1; text-shadow: 0 0 24px rgba(0,0,0,0.9); color: #fff; }
+  #gear { position: relative; line-height: 1; text-shadow: 0 1px 3px rgba(0,0,0,0.8), 0 0 24px rgba(0,0,0,0.9); color: #fff; }
+  #gear-txt { opacity: var(--hud-opacity); }
   #gear.italic { font-style: italic; }
-  #gear.glow { background: linear-gradient(to top, rgba(255,255,255,0.12), transparent); padding: 1px 5px; }
+  #gear.glow { padding: 1px 5px; }
+  #gear.glow::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: linear-gradient(to top, rgba(255,255,255,0.16), transparent);
+    mix-blend-mode: plus-lighter;
+  }
   #speed-wrap { display: flex; align-items: center; gap: 3px; }
-  #speed { font-family: 'Consolas', 'Cascadia Code', monospace; color: #fff; }
+  #speed { font-family: 'Consolas', 'Cascadia Code', monospace; color: #fff; opacity: var(--hud-opacity); text-shadow: 0 1px 3px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.4); }
   #speed.italic { font-style: italic; }
-  #labels { display: flex; flex-direction: column; color: #fff; opacity: 0.7; line-height: 1.15; }
+  #labels { display: flex; flex-direction: column; color: #fff; opacity: calc(var(--hud-opacity) * 0.85); line-height: 1.15; text-shadow: 0 1px 3px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.4); }
   #labels.italic { font-style: italic; }
 
+  /* Marker glow stack (three layers, per line):
+     1. line core: solid color, source-over — hue anchor, LED-on-white visible.
+     2. ::before: dark backing halo (source-over) — invisible on dark scenes;
+        on bright scenes digs a local contrast pad so the glow can pop.
+     3. ::after: additive glow (plus-lighter) — tight hue-tinted hot core +
+        wide colored aura. Channels clamp toward white naturally; pure white
+     was too blinding at night, so the hot core is tinted and moderate. */
   #rpm-wrap { position: relative; width: 260px; height: 5px; background: rgba(255,255,255,0.10); margin-bottom: 6px; }
   #rpm-bar { height: 100%; position: relative; }
-  #rpm-bar::after { content:""; position:absolute; right:0; top:0; width:1px; height:100%; background:#fff; box-shadow: 0 0 6px 2px rgba(255,255,255,0.7); }
+  #rpm-bar::after {
+    content:""; position:absolute; right:0; top:0; width:1px; height:100%; background:#fff;
+    mix-blend-mode: plus-lighter;
+    box-shadow: 0 0 calc(4px*var(--glow)) calc(1px*var(--glow)) rgba(255,255,255,calc(0.6*var(--glow))),
+                0 0 calc(10px*var(--glow)) calc(2px*var(--glow)) rgba(255,255,255,calc(0.35*var(--glow)));
+  }
   #shift-line, #limiter-line { position: absolute; top: -2px; width: 2px; height: 9px; }
-  #shift-line { background: #3399ff; box-shadow: 0 0 6px 2px rgba(51,153,255,0.6); }
-  #limiter-line { background: #ff3333; box-shadow: 0 0 6px 2px rgba(255,51,51,0.6); }
-  #pwr-band { position: absolute; top: 2px; height: 1px; background: #fff; opacity: 0.6; }
+  #shift-line { background: #3399ff; }
+  #limiter-line { background: #ff3333; }
+  #shift-line::before, #limiter-line::before {
+    content:""; position:absolute; inset:0; pointer-events:none;
+    box-shadow: 0 0 calc(9px*var(--glow)) calc(3px*var(--glow)) rgba(0,0,0,calc(0.5*var(--glow)));
+  }
+  #shift-line::after, #limiter-line::after {
+    content:""; position:absolute; inset:0; pointer-events:none;
+    mix-blend-mode: plus-lighter;
+  }
+  #shift-line::after {
+    box-shadow: 0 0 calc(4px*var(--glow)) calc(1px*var(--glow)) rgba(200,230,255,calc(0.5*var(--glow))),
+                0 0 calc(12px*var(--glow)) calc(3px*var(--glow)) rgba(51,153,255,calc(0.65*var(--glow)));
+  }
+  #limiter-line::after {
+    box-shadow: 0 0 calc(4px*var(--glow)) calc(1px*var(--glow)) rgba(255,210,200,calc(0.5*var(--glow))),
+                0 0 calc(12px*var(--glow)) calc(3px*var(--glow)) rgba(255,51,51,calc(0.65*var(--glow)));
+  }
+  #pwr-band { position: absolute; top: 2px; height: 1px; background: #fff; opacity: 0.6; mix-blend-mode: plus-lighter; }
 
-  #info-row { display: flex; gap: 12px; color: #fff; opacity: 0.7; }
+  #info-row { display: flex; gap: 12px; color: #fff; opacity: calc(var(--hud-opacity) * 0.85); font-size: 12px; text-shadow: 0 1px 3px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.4); }
 
   .strobe { animation: flash 0.08s steps(2) infinite alternate; }
   .bar-strobe { animation: bar-flash 0.08s steps(2) infinite alternate !important; }
   @keyframes flash {
-    0%   { color: #3399ff; text-shadow: 0 0 30px #3399ff; }
-    100% { color: #fff; text-shadow: 0 0 60px #88ccff; }
+    0%   { color: #3399ff; text-shadow: 0 0 calc(30px*var(--glow)) #3399ff; }
+    100% { color: #fff; text-shadow: 0 0 calc(60px*var(--glow)) #88ccff; }
   }
   @keyframes bar-flash {
-    0% { background: linear-gradient(to right,#3399ff44,#3399ff); box-shadow: 0 0 12px 3px rgba(51,153,255,0.7); }
-    100% { background: linear-gradient(to right,#ffffff88,#fff); box-shadow: 0 0 16px 5px rgba(200,220,255,0.8); }
+    0% { background: linear-gradient(to right,#3399ff44,#3399ff); box-shadow: 0 0 calc(12px*var(--glow)) calc(3px*var(--glow)) rgba(51,153,255,calc(0.7*var(--glow))); }
+    100% { background: linear-gradient(to right,#ffffff88,#fff); box-shadow: 0 0 calc(16px*var(--glow)) calc(5px*var(--glow)) rgba(200,220,255,calc(0.8*var(--glow))); }
   }
 </style>
 </head>
 <body>
+<canvas id="backdrop"></canvas>
 <div id="hud">
-  <div id="top-row">
-    <div id="gear">N</div>
-    <div id="speed-wrap">
-      <div id="speed">000</div>
-      <div id="labels"><span>KM/H</span><span id="slip">SLIP</span></div>
+  <div id="hud-inner">
+    <div id="top-row">
+      <div id="gear"><span id="gear-txt">N</span></div>
+      <div id="speed-wrap">
+        <div id="speed">000</div>
+        <div id="labels"><span>KM/H</span><span id="slip">SLIP</span></div>
+      </div>
     </div>
-  </div>
-  <div id="rpm-wrap">
-    <div id="rpm-bar"></div>
-    <div id="pwr-band"></div>
-    <div id="shift-line"></div>
-    <div id="limiter-line"></div>
-  </div>
-  <div id="info-row">
-    <span id="rpm-text">0 rpm</span>
-    <span id="hp-text">0 hp</span>
+    <div id="rpm-wrap">
+      <div id="rpm-bar"></div>
+      <div id="pwr-band"></div>
+      <div id="shift-line"></div>
+      <div id="limiter-line"></div>
+    </div>
+    <div id="info-row">
+      <span id="rpm-text">0 rpm</span>
+      <span id="hp-text">0 hp</span>
+    </div>
   </div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
 function gearLabel(g){return g===0?"R":g===-1?"N":String(g);}
+
+// Backdrop plate: rounded rectangle with "continuous corners" — each corner is
+// a clothoid (curvature ramps 0 → 1/ra linearly) + circular arc + clothoid, so
+// straight edges stay straight and the line-to-arc joints are curvature-
+// continuous (no kink, no mid-corner pinch). Smoothness = hud_backdrop_smooth
+// (_bkS): the clothoid share of the 90° turn, 0 = pure circular arc, 1 = fully
+// eased. Corner footprint D = hud_backdrop_radius (_bkR). Alpha falls off as
+// maxA·exp(-d/τ) (τ=tail/3) with per-layer compositing correction; fade rings
+// are EXACT parallel offsets of the base plate (every corner sample carries
+// its analytic normal), fully contained in the window. Painted once on load,
+// on resize, and on radius/smoothness change only.
+function paintBackdrop(){
+  const c=$("backdrop"),dpr=window.devicePixelRatio||1;
+  const w=window.innerWidth,h=window.innerHeight;
+  c.width=Math.round(w*dpr);c.height=Math.round(h*dpr);
+  const ctx=c.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  const tail=12,maxA=0.45,tau=tail/3,N=10;
+  const D=Math.max(0,Math.min(window._bkR??100,w/2-tail,h/2-tail));
+  const sm=Math.max(0,Math.min(1,window._bkS??0.5));
+  // Fresnel auxiliaries: C(λ)=∫₀^λ cos(φu²)du, S(λ)=∫₀^λ sin(φu²)du (series)
+  function fcs(phi,lam){
+    let C=0,S=0,sign=1,cn=lam,cf=1,sn=phi*lam*lam*lam,sf=1;
+    for(let n=0;n<40;n++){
+      const ct=sign*cn/(cf*(4*n+1)),st=sign*sn/(sf*(4*n+3));
+      C+=ct;S+=st;
+      if(Math.abs(ct)+Math.abs(st)<1e-13)break;
+      sign=-sign;
+      const p2l4=phi*phi*lam*lam*lam*lam;
+      cn*=p2l4;cf*=(2*n+1)*(2*n+2);
+      sn*=p2l4;sf*=(2*n+2)*(2*n+3);
+    }
+    return[C,S];
+  }
+  // TR corner samples in local frame: A=(0,0) joint on top edge, geometric
+  // corner=(D,0), B=(D,D) joint on right edge. Each sample carries its
+  // outward unit normal (sin h, -cos h) from the tangent heading h.
+  function cornerPts(){
+    const pts=[{x:0,y:0,sn:0,cs:1}];
+    if(D<0.5)return pts;
+    const phi=sm*Math.PI/4;
+    if(phi<1e-6){ // pure circular arc, radius D
+      for(let i=1;i<=24;i++){const hd=i/24*Math.PI/2;
+        pts.push({x:D*Math.sin(hd),y:D*(1-Math.cos(hd)),sn:Math.sin(hd),cs:Math.cos(hd)});}
+      return pts;
+    }
+    const[C1,S1]=fcs(phi,1);
+    const ra=D/(2*phi*(C1+S1)+Math.cos(phi)-Math.sin(phi));
+    const L=2*phi*ra,cloth=[];
+    for(let i=1;i<=14;i++){
+      const lam=i/14,[cc,ss]=fcs(phi,lam),hd=phi*lam*lam;
+      cloth.push({x:L*cc,y:L*ss,sn:Math.sin(hd),cs:Math.cos(hd)});
+    }
+    const ce=cloth[cloth.length-1];
+    const cx=ce.x-ra*Math.sin(phi),cy=ce.y+ra*Math.cos(phi);
+    for(const p of cloth)pts.push(p);
+    const hEnd=Math.PI/2-phi;
+    if(hEnd-phi>1e-9){
+      for(let i=1;i<=16;i++){
+        const hd=phi+(hEnd-phi)*i/16;
+        pts.push({x:cx+ra*Math.sin(hd),y:cy-ra*Math.cos(hd),sn:Math.sin(hd),cs:Math.cos(hd)});
+      }
+    }
+    for(let i=cloth.length-2;i>=0;i--){ // mirror across the 45° diagonal (skip dup of arc end)
+      const p=cloth[i];
+      pts.push({x:D-p.y,y:D-p.x,sn:p.cs,cs:p.sn});
+    }
+    pts.push({x:D,y:D,sn:1,cs:0}); // B = mirror of A, exact joint on right edge
+    return pts;
+  }
+  const corner=cornerPts();
+  // Base plate geometric corners (fixed at inset tail; ring d = offset s=tail-d)
+  const g=[[w-tail,tail],[w-tail,h-tail],[tail,h-tail],[tail,tail]];
+  function plate(d){
+    const x0=d,y0=d,x1=w-d,y1=h-d;
+    ctx.beginPath();
+    if(D<0.5){ctx.rect(x0,y0,x1-x0,y1-y0);return;}
+    const s=tail-d; // ring = base plate offset outward by s along normals
+    const P=corner.map(p=>({x:p.x+s*p.sn,y:p.y-s*p.cs}));
+    const TR=P.map(p=>[g[0][0]-D+p.x,g[0][1]+p.y]);
+    const BR=P.map(p=>[g[1][0]-p.y,g[1][1]-D+p.x]);
+    const BL=P.map(p=>[g[2][0]+D-p.x,g[2][1]-p.y]);
+    const TL=P.map(p=>[g[3][0]+p.y,g[3][1]+D-p.x]);
+    ctx.moveTo(TL[TL.length-1][0],TL[TL.length-1][1]); // top edge, left joint
+    ctx.lineTo(TR[0][0],TR[0][1]);
+    for(const q of TR)ctx.lineTo(q[0],q[1]);
+    ctx.lineTo(BR[0][0],BR[0][1]);
+    for(const q of BR)ctx.lineTo(q[0],q[1]);
+    ctx.lineTo(BL[0][0],BL[0][1]);
+    for(const q of BL)ctx.lineTo(q[0],q[1]);
+    ctx.lineTo(TL[0][0],TL[0][1]);
+    for(const q of TL)ctx.lineTo(q[0],q[1]);
+    ctx.closePath();
+  }
+  let prev=0;
+  for(let i=0;i<N;i++){
+    const d=tail*i/(N-1);
+    const target=maxA*Math.exp(-(tail-d)/tau);
+    const a=(target-prev)/(1-prev);prev=target;
+    if(a<=0.001)continue;
+    plate(d);
+    ctx.fillStyle=`rgba(0,0,0,${a.toFixed(4)})`;
+    ctx.fill();
+  }
+  // Glass rim: faint top-down light wash + specular edge highlight
+  ctx.save();
+  plate(tail);ctx.clip();
+  const wash=ctx.createLinearGradient(0,tail,0,h-tail);
+  wash.addColorStop(0,"rgba(255,255,255,0.055)");
+  wash.addColorStop(0.35,"rgba(255,255,255,0.015)");
+  wash.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.fillStyle=wash;ctx.fillRect(0,0,w,h);
+  const rim=ctx.createLinearGradient(0,tail,0,tail+Math.min(90,h*0.45));
+  rim.addColorStop(0,"rgba(255,255,255,0.16)");
+  rim.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.strokeStyle=rim;ctx.lineWidth=1.4;
+  plate(tail);ctx.stroke();
+  ctx.restore();
+}
+window.addEventListener("resize",paintBackdrop);
+paintBackdrop();
 function rpmColor(pct,ys){
-  if(pct<ys*100)return"rgba(255,255,255,0.45)";
+  // Returns [from, to] gradient stops. NOTE: every stop must be a complete
+  // color value — the old single-color + `${c}44` suffix pattern produced
+  // invalid CSS ("rgba(...)44") in the dim state and killed the bar entirely.
+  if(pct<ys*100)return["rgba(255,255,255,0.12)","rgba(255,255,255,0.45)"];
   const z=(100-ys*100)/3;
-  if(pct<ys*100+z)return"#ffdd00";
-  if(pct<ys*100+2*z)return"#ff8800";
-  return"#ff3300";
+  if(pct<ys*100+z)return["#ffdd0044","#ffdd00"];
+  if(pct<ys*100+2*z)return["#ff880044","#ff8800"];
+  return["#ff330044","#ff3300"];
 }
 
 function connect(){
@@ -86,9 +269,22 @@ function connect(){
     if(d.type!=="telemetry")return;
 
     const s=d.settings||{};
-    // Opacity
+    // Opacity: container = show/hide only; user opacity dims text elements
+    // (see CSS note). Bars/lines/glows always render at full brightness.
     const editOn=document.body.classList.contains("edit-mode");
-    $("hud").style.opacity=(d.hud_visible||editOn)?(s.hud_opacity||0.70):"0";
+    document.documentElement.style.setProperty("--hud-vis",(d.hud_visible||editOn)?"1":"0");
+    document.documentElement.style.setProperty("--hud-opacity",s.hud_opacity??0.70);
+    $("backdrop").style.opacity=(d.hud_visible||editOn)?(s.hud_backdrop??0.30):"0";
+    if(s.hud_backdrop_radius!==window._bkR||s.hud_backdrop_smooth!==window._bkS){window._bkR=s.hud_backdrop_radius;window._bkS=s.hud_backdrop_smooth;paintBackdrop();}
+    // Glow auto-adapts to ambient scene brightness (env_luma sampled by the
+    // backend around the HUD window): additive glows can't outshine a bright
+    // background, so they retract in daylight and open up in the dark.
+    const el=d.env_luma??-1;
+    if(window._envF===undefined)window._envF=0.75;
+    const envTarget=el<0?0.75:el<0.28?0.75:el>0.62?0.12:0.75+(0.12-0.75)*(el-0.28)/0.34;
+    window._envF+=(envTarget-window._envF)*0.3;
+    document.documentElement.style.setProperty("--glow",(s.hud_glow??1)*window._envF);
+    $("pwr-band").style.opacity=s.power_band_opacity??0.5;
     // Scale
     const scale=s.hud_scale||2.0;
     // G-force float with EMA smoothing + per-axis sensitivity
@@ -109,7 +305,13 @@ function connect(){
       window._gSmooth.y+=((targetY||0)-window._gSmooth.y)*alpha;
       gx=window._gSmooth.x;gy=window._gSmooth.y;
     }
-    $("hud").style.transform=`scale(${scale}) translate(${gx.toFixed(1)}px,${gy.toFixed(1)}px)`;
+    // zoom replicates scale() without creating a stacking context; left/top
+    // offsets are in unscaled parent space, so multiply by scale to match the
+    // old scale(s)·translate(g) net offset.
+    const inner=$("hud-inner");
+    inner.style.zoom=scale;
+    inner.style.left=(gx*scale).toFixed(1)+"px";
+    inner.style.top=(gy*scale).toFixed(1)+"px";
     // Font settings
     $("gear").style.fontSize=(s.gear_font_size||28)+"px";
     $("gear").style.fontWeight=s.gear_font_weight||500;
@@ -132,7 +334,7 @@ function connect(){
     const ys=s.gear_yellow_start||0.5;
     const sa=d.shift_advice||{};
 
-    $("gear").textContent=gearLabel(d.gear);
+    $("gear-txt").textContent=gearLabel(d.gear);
     $("speed").textContent=String(Math.round(d.speed_kmh||0)).padStart(3,"0");
     // RPM bar width
     $("rpm-wrap").style.width=(s.rpm_bar_width||260)+"px";
@@ -141,7 +343,7 @@ function connect(){
 
     // RPM bar
     $("rpm-bar").style.width=rpmPct+"%";
-    if(!sa.limiter){const c=rpmColor(rpmPct,ys);$("rpm-bar").style.background=`linear-gradient(to right,${c}44,${c})`;}
+    if(!sa.limiter){const[c0,c1]=rpmColor(rpmPct,ys);$("rpm-bar").style.background=`linear-gradient(to right,${c0},${c1})`;}
 
     // Shift/limiter lines with display-layer EMA anti-flicker
     if(!window._ms){window._ms={sr:0,lr:100,pl:33,pw:30};}

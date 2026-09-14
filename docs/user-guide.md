@@ -49,17 +49,18 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 |------|------|
 | 总览 | HUD 预览 + 油门/刹车示波器 + 功率曲线 + G-G 图 + 胎温/悬挂/滑移 + 油门刹车柱 |
 | HUD | HUD 浮层全部显示参数（字号/配色/标记线/G力浮动等） |
-| 动力 | 功率/扭矩曲线 + 换挡激进程度 + 断油阈值 + 曲线管理 |
+| 动力 | 功率/扭矩曲线 + 换挡参数 + 功率带阈值 + 曲线采样 + 增压稳定 + EV检测 + 曲线管理 |
 | 轮胎 | 胎温量杯 + 滑移率量杯 + 滑移阈值 |
 | 悬挂 | 四轮行程示波器 + 胶囊柱状图 + 颜色阈值 |
 | G值 | G-G 拖尾轨迹图 + 总G平滑 |
 | 录制 | 自由录制/定时录制 + 文件管理 + 回放控制 |
-| 设置 | 曲线采样参数 + 增压稳定 + EV检测 + 渲染模式 + UDP端口 |
+| 设置 | 渲染模式 + UDP端口 |
 
 ### HUD 浮层
 
 - 点击"启动 HUD"打开透明浮层窗口
 - 浮层显示：档位、时速、RPM 条、换挡线（蓝）、断油线（红）、功率带（白）
+- 背景罩：HUD 区域圆角柔光板，浓度与圆角半径可调（HUD 页"外观"），0=关闭；文字带兜底阴影；换挡线/爆闪光晕强度可调，并随场景亮度自动缩放（白天收小、夜晚放开）
 - 爆闪提示：达到换挡点时档位和 RPM 条闪烁蓝光
 - G 力浮动：加速/刹车/过弯时浮层整体漂移
 - 编辑模式：点击"激活 HUD"可拖动窗口、调整大小，黄色虚线框表示编辑中
@@ -151,17 +152,18 @@ The left sidebar has 8 tabs:
 |-----|----------|
 | Dashboard | HUD preview + throttle/brake oscilloscope + power curve + G-G plot + tire temp/suspension/slip + throttle/brake bars |
 | HUD | Full HUD display parameters (fonts, colors, markers, G-force float, etc.) |
-| Power | Power/torque curves + shift aggressiveness + limiter threshold + curve management |
+| Power | Power/torque curves + shift parameters + power band threshold + curve sampling + boost stable + EV detection + curve management |
 | Tires | Tire temp gauges + slip ratio gauges + slip thresholds |
 | Suspension | 4-wheel oscilloscopes + staggered bar chart + color thresholds |
 | G-Force | G-G trail plot + total G smoothing |
 | Record | Free/timed recording + file management + playback controls |
-| Settings | Curve sampling + boost stable + EV detection + render mode + UDP port |
+| Settings | Render mode + UDP port |
 
 ### HUD Overlay
 
 - Click "Start HUD" to open the transparent overlay window
 - Displays: gear, speed, RPM bar, shift line (blue), limiter line (red), power band (white)
+- Backdrop: rounded soft plate behind HUD content with adjustable opacity and corner radius (HUD tab → Appearance); 0 = off. Text carries a fallback shadow; marker/strobe glow intensity adjustable and auto-scaled by ambient scene brightness (retracts in daylight, opens in the dark)
 - Strobe flash: gear and RPM bar flash blue when reaching shift point
 - G-force float: overlay drifts with acceleration/braking/cornering
 - Edit mode: click "Activate HUD" to drag and resize the window (yellow dashed border)

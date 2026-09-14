@@ -19,6 +19,8 @@ const topGap = computed(() => settings.value.top_row_gap ?? 4)
 const speedLabelGap = computed(() => settings.value.speed_label_gap ?? 3)
 const rpmBright = computed(() => settings.value.rpm_bar_brightness ?? 1)
 const rpmHue = computed(() => settings.value.rpm_bar_hue ?? 0)
+const glowStrength = computed(() => settings.value.hud_glow ?? 1)
+const powerBandOpacity = computed(() => settings.value.power_band_opacity ?? 0.5)
 
 // ── telemetry data ──
 const speed = computed(() => String(Math.round(props.telemetry?.speed_kmh ?? 0)).padStart(3, "0"))
@@ -106,6 +108,7 @@ const slipColor = computed(() => {
       '--sl-gap': speedLabelGap + 'px',
       '--rpm-bright': rpmBright,
       '--rpm-hue': rpmHue + 'deg',
+      '--glow': glowStrength,
     }">
     <div class="hud-top-row" :style="{ gap: topGap + 'px' }">
       <div class="hud-gear"
@@ -125,7 +128,7 @@ const slipColor = computed(() => {
       <div class="hud-shift-line" :style="{ left: shiftLinePct + '%' }"></div>
       <div class="hud-limiter-line" :style="{ left: limiterPct + '%' }"></div>
       <div class="hud-power-band"
-        :style="{ left: pbLoPct.left + '%', width: pbLoPct.width + '%' }">
+        :style="{ left: pbLoPct.left + '%', width: pbLoPct.width + '%', opacity: powerBandOpacity }">
       </div>
     </div>
 
@@ -160,11 +163,11 @@ const slipColor = computed(() => {
   font-size: var(--fs-gear, 28px);
   font-weight: var(--fw-gear, 500);
   line-height: 1;
-  text-shadow: 0 0 24px rgba(0,0,0,0.9);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8), 0 0 24px rgba(0,0,0,0.9);
 }
 .hud-gear.italic { font-style: italic; }
 .hud-gear.glow {
-  background: linear-gradient(to top, rgba(255,255,255,0.12), transparent);
+  background: linear-gradient(to top, rgba(255,255,255,0.16), transparent);
   padding: 1px 5px;
 }
 .hud-speed-group { display: flex; align-items: center; gap: 4px; }
@@ -178,7 +181,7 @@ const slipColor = computed(() => {
 .hud-labels {
   display: flex; flex-direction: column;
   font-size: var(--fs-label, 11px);
-  color: #fff; opacity: 0.7; line-height: 1.15;
+  color: #fff; opacity: 0.85; line-height: 1.15;
 }
 .hud-labels.italic { font-style: italic; }
 
@@ -188,18 +191,39 @@ const slipColor = computed(() => {
   margin-bottom: 4px; overflow: visible;
 }
 .hud-rpm-bar { height: 100%; position: relative; }
-.hud-rpm-bar::after { content:""; position:absolute; right:0; top:0; width:1px; height:100%; background:#fff; box-shadow: 0 0 6px 2px rgba(255,255,255,0.7); }
+.hud-rpm-bar::after {
+  content:""; position:absolute; right:0; top:0; width:1px; height:100%; background:#fff;
+  mix-blend-mode: plus-lighter;
+  box-shadow: 0 0 calc(4px*var(--glow,1)) calc(1px*var(--glow,1)) rgba(255,255,255,calc(0.6*var(--glow,1))),
+              0 0 calc(10px*var(--glow,1)) calc(2px*var(--glow,1)) rgba(255,255,255,calc(0.35*var(--glow,1)));
+}
 .hud-shift-line, .hud-limiter-line {
   position: absolute; top: -2px; width: 2px; height: 9px;
 }
-.hud-shift-line { background: #3399ff; box-shadow: 0 0 6px 2px rgba(51,153,255,0.6); }
-.hud-limiter-line { background: #ff3333; box-shadow: 0 0 6px 2px rgba(255,51,51,0.6); }
+.hud-shift-line { background: #3399ff; }
+.hud-limiter-line { background: #ff3333; }
+.hud-shift-line::before, .hud-limiter-line::before {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  box-shadow: 0 0 calc(9px*var(--glow,1)) calc(3px*var(--glow,1)) rgba(0,0,0,calc(0.5*var(--glow,1)));
+}
+.hud-shift-line::after, .hud-limiter-line::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  mix-blend-mode: plus-lighter;
+}
+.hud-shift-line::after {
+  box-shadow: 0 0 calc(4px*var(--glow,1)) calc(1px*var(--glow,1)) rgba(200,230,255,calc(0.5*var(--glow,1))),
+              0 0 calc(12px*var(--glow,1)) calc(3px*var(--glow,1)) rgba(51,153,255,calc(0.65*var(--glow,1)));
+}
+.hud-limiter-line::after {
+  box-shadow: 0 0 calc(4px*var(--glow,1)) calc(1px*var(--glow,1)) rgba(255,210,200,calc(0.5*var(--glow,1))),
+              0 0 calc(12px*var(--glow,1)) calc(3px*var(--glow,1)) rgba(255,51,51,calc(0.65*var(--glow,1)));
+}
 .hud-power-band {
   position: absolute; top: 2px; height: 1px;
-  background: rgba(255,255,255,0.6);
+  background: #fff; mix-blend-mode: plus-lighter;
 }
 .hud-info-row {
-  display: flex; gap: 12px; font-size: 12px; opacity: 0.7; justify-content: center;
+  display: flex; gap: 12px; font-size: 12px; opacity: 0.85; justify-content: center;
 }
 .hud-debug-row {
   font-size: 9px; opacity: 0.35; text-align: center; margin-top: 2px;

@@ -105,7 +105,7 @@ onMounted(() => nextTick(drawPower))
 <template>
   <div class="tab-page">
     <h2>动力系统</h2>
-    <p class="subtitle">功率曲线 · 扭矩 · 增压 · 换挡参数</p>
+    <p class="subtitle">功率曲线 · 采样 · 增压 · 换挡 · EV 检测</p>
 
     <div class="card" :class="{ 'card-locked': isLocked }" @dblclick="toggleLock" title="双击切换锁定">
       <h3>功率 / 扭矩曲线 <span v-if="isLocked" class="lock-badge">已锁定</span></h3>
@@ -126,6 +126,12 @@ onMounted(() => nextTick(drawPower))
           <input type="range" min="90" max="100" :value="(s('limiter_threshold', 1.0)) * 100"
             @input="emit('set', 'limiter_threshold', Number(($event.target as HTMLInputElement).value) / 100)">
           <span class="val">{{ ((s('limiter_threshold', 1.0)) * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="row">
+          <label>功率带阈值 <InfoTip>峰值功率百分比。高于此值的 RPM 区间计入功率带（HUD 白色带）。全局设置</InfoTip></label>
+          <input type="range" min="50" max="100" :value="(s('power_band_pct', 0.93)) * 100"
+            @input="emit('set', 'power_band_pct', Number(($event.target as HTMLInputElement).value) / 100)">
+          <span class="val">{{ ((s('power_band_pct', 0.93)) * 100).toFixed(0) }}%</span>
         </div>
       </div>
 
@@ -155,6 +161,29 @@ onMounted(() => nextTick(drawPower))
       <div class="card">
         <h3>采样参数</h3>
         <div class="row">
+          <label>最低油门 <InfoTip>低于此油门开度不采样，过滤松油/滑行数据</InfoTip></label>
+          <input type="range" min="50" max="100" :value="(s('sample_throttle_min', 0.95)) * 100"
+            @input="emit('set', 'sample_throttle_min', Number(($event.target as HTMLInputElement).value) / 100)">
+          <span class="val">{{ ((s('sample_throttle_min', 0.95)) * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="row">
+          <label>采样跳过时长 <InfoTip>换挡后跳过 N 毫秒再采样，过滤换挡瞬间的脏数据。按时长计算，与发包率无关</InfoTip></label>
+          <input type="range" min="0" max="500" step="10" :value="s('sample_skip_ms', 130)"
+            @input="emit('set', 'sample_skip_ms', Number(($event.target as HTMLInputElement).value))">
+          <span class="val">{{ s('sample_skip_ms', 130) }}ms</span>
+        </div>
+        <div class="row">
+          <label>EMA 权重 <InfoTip>新数据的权重。1/2=快速覆盖，1/16=极度平滑。值越大越敏感</InfoTip></label>
+          <select :value="String(s('curve_alpha', 0.25))"
+            @change="emit('set', 'curve_alpha', Number(($event.target as HTMLSelectElement).value))"
+            style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px">
+            <option value="0.5">1/2 (快)</option>
+            <option value="0.25">1/4 (默认)</option>
+            <option value="0.125">1/8</option>
+            <option value="0.0625">1/16 (慢)</option>
+          </select>
+        </div>
+        <div class="row">
           <label>骤降拒绝 <InfoTip>同比拒绝：当前功率低于同转速EMA乘以此阈值时拒绝该样本。0=不拒绝</InfoTip></label>
           <input type="range" min="0" max="100" :value="(s('power_drop_limit', 0)) * 100"
             @input="emit('set', 'power_drop_limit', Number(($event.target as HTMLInputElement).value) / 100)">
@@ -168,24 +197,34 @@ onMounted(() => nextTick(drawPower))
       <p class="card-note">逐帧比对增压值，持续稳定后确立基准，之后压力接近基准即采样。自吸车（含怠速负压）无正面效果，无需开启。</p>
       <div class="row">
         <label class="check-label">
-          <input type="checkbox" :checked="!!s('boost_stable_sample', false)"
+          <input type="checkbox" :checked="!!s('boost_stable_sample', true)"
             @change="emit('set', 'boost_stable_sample', ($event.target as HTMLInputElement).checked)">
           启用
         </label>
       </div>
       <div class="two-col-inner">
         <div class="row">
-          <label>连续帧数 <InfoTip>增压值需连续相同多少帧才确认为稳定基准。更大=更严格，默认 30（约 0.5 秒）</InfoTip></label>
-          <input type="range" min="5" max="120" :value="s('boost_stable_frames', 30)"
-            @input="emit('set', 'boost_stable_frames', Number(($event.target as HTMLInputElement).value))">
-          <span class="val">{{ s('boost_stable_frames', 30) }} 帧</span>
+          <label>增压稳定时长 <InfoTip>增压值需保持相同多少毫秒 (ms) 才确认为稳定基准。按墙钟时长计算，与发包率无关。更大=更严格，默认 500</InfoTip></label>
+          <input type="range" min="100" max="2000" step="50" :value="s('boost_stable_ms', 500)"
+            @input="emit('set', 'boost_stable_ms', Number(($event.target as HTMLInputElement).value))">
+          <span class="val">{{ s('boost_stable_ms', 500) }} ms</span>
         </div>
         <div class="row">
           <label>峰值容忍 <InfoTip>当前增压 >= 基准值 × 此比例即放行采样。0.90 = 允许 10% 波动。更小 = 更宽容</InfoTip></label>
-          <input type="range" min="50" max="100" :value="(s('boost_stable_tol', 0.90)) * 100"
+          <input type="range" min="50" max="100" :value="(s('boost_stable_tol', 0.98)) * 100"
             @input="emit('set', 'boost_stable_tol', Number(($event.target as HTMLInputElement).value) / 100)">
-          <span class="val">{{ (s('boost_stable_tol', 0.90) * 100).toFixed(0) }}%</span>
+          <span class="val">{{ (s('boost_stable_tol', 0.98) * 100).toFixed(0) }}%</span>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>EV 检测 <span class="tag">Motorsport 禁用</span></h3>
+      <div class="row">
+        <label>检测帧数 <InfoTip>全油门时档位≤2 持续 N 帧判为电车（自动隐藏换挡/断油线）</InfoTip></label>
+        <input type="range" min="100" max="2000" step="50" :value="s('ev_detect_frames', 300)"
+          @input="emit('set', 'ev_detect_frames', Number(($event.target as HTMLInputElement).value))">
+        <span class="val">{{ s('ev_detect_frames', 300) }}</span>
       </div>
     </div>
   </div>

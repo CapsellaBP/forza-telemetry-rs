@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::{atomic::{AtomicBool, AtomicU64}, atomic::Ordering, Arc, Mutex as StdMutex};
+use std::sync::{atomic::{AtomicBool, AtomicU64, AtomicU32}, atomic::Ordering, Arc, Mutex as StdMutex};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
@@ -38,10 +38,10 @@ fn pkt_max_slip(pkt: &HashMap<String, f64>) -> f64 {
 fn apply_advisor_settings(a: &mut ShiftAdvisor, settings: &serde_json::Value) {
     a.throttle_min = settings.get("sample_throttle_min").and_then(|v| v.as_f64()).unwrap_or(0.95);
     a.alpha = settings.get("curve_alpha").and_then(|v| v.as_f64()).unwrap_or(0.25);
-    a.skip_frames = settings.get("sample_skip_frames").and_then(|v| v.as_u64()).unwrap_or(8) as u32;
+    a.skip_ms = settings.get("sample_skip_ms").and_then(|v| v.as_u64()).unwrap_or(130) as u32;
     a.power_drop_limit = settings.get("power_drop_limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
     a.boost_stable_sample = settings.get("boost_stable_sample").and_then(|v| v.as_bool()).unwrap_or(false);
-    a.boost_stable_frames = settings.get("boost_stable_frames").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
+    a.boost_stable_ms = settings.get("boost_stable_ms").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
     a.boost_stable_tol = settings.get("boost_stable_tol").and_then(|v| v.as_f64()).unwrap_or(0.90);
 }
 
@@ -63,6 +63,12 @@ pub fn resolve_path(rel: &str) -> String {
 /// Decided once at startup from effective_render_mode(); the auto arbitration
 /// in the UDP loop compares against this.
 pub static ACTIVE_SOFTWARE_RENDER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Ambient luminance around the HUD window (0..1, screen-sampled by lib.rs at
+/// 2 Hz, EMA-smoothed). -1 = unknown (no HUD window / capture failed). The HUD
+/// frontend scales glow size/strength down when the scene behind is bright —
+/// additive glows can't outshine a bright background, so they retract instead.
+pub static ENV_LUMA: AtomicU32 = AtomicU32::new((-1.0f32).to_bits());
 
 /// 读取 hud-settings.json 计算本次启动实际生效的渲染模式。
 /// auto 解析为 render_mode_effective（缺省 software）。返回 "software" | "hardware"。
@@ -108,6 +114,7 @@ impl Default for State {
             raw: HashMap::new(), packet_count: 0, game: String::new(),
             settings: serde_json::json!({
                 "hud_opacity": 0.70, "hud_scale": 2.0, "shift_aggressiveness": 0,
+                "hud_backdrop": 0.30, "hud_glow": 1.0, "hud_backdrop_radius": 100, "hud_backdrop_smooth": 0.5,
                 "limiter_threshold": 1.0, "shift_trigger_pct": 1.0,
                 "gear_yellow_start": 0.50, "rpm_bar_brightness": 1.0, "rpm_bar_hue": 0,
                 "power_band_pct": 0.93, "power_band_opacity": 0.5,
@@ -120,14 +127,14 @@ impl Default for State {
                 "marker_ema_alpha": 0.06,
                 "g_total_ema_alpha": 0.05,
                 "rpm_bar_width": 260,
-                "boost_stable_sample": false, "boost_stable_frames": 30, "boost_stable_tol": 0.90,
+                "boost_stable_sample": true, "boost_stable_ms": 500, "boost_stable_tol": 0.98,
                 "udp_port": 5300,
                 "render_mode": "software",
 
 
                 "susp_thr1": 0.30, "susp_thr2": 0.55, "susp_thr3": 0.80,
                 "slip_warn": 0.10, "slip_danger": 0.50,
-                "sample_throttle_min": 0.95, "sample_skip_frames": 8, "curve_alpha": 0.25,
+                "sample_throttle_min": 0.95, "sample_skip_ms": 130, "curve_alpha": 0.25,
                 "power_drop_limit": 0.0,
                 "ev_detect_frames": 300,
             }),
@@ -153,6 +160,7 @@ struct BroadcastMsg {
     recording: bool, rec_pending: bool, playing: bool, paused: bool, record_count: u64, play_count: u64,
     ws_clients: usize,
     game: String,
+    env_luma: f32,
     error: Option<String>,
 }
 
@@ -210,6 +218,7 @@ fn build_broadcast(state: &State, connected: usize, edit_mode: bool, rec_on: boo
         play_count: 0,
         ws_clients: connected,
         game: state.game.clone(),
+        env_luma: f32::from_bits(ENV_LUMA.load(Ordering::Relaxed)),
         error: error_msg,
     }
 }
@@ -389,10 +398,10 @@ async fn run(
                             let s = udp_state.read().await;
                             (s.settings.get("sample_throttle_min").and_then(|v| v.as_f64()).unwrap_or(0.95),
                              s.settings.get("curve_alpha").and_then(|v| v.as_f64()).unwrap_or(0.25),
-                             s.settings.get("sample_skip_frames").and_then(|v| v.as_u64()).unwrap_or(8) as u32,
+                             s.settings.get("sample_skip_ms").and_then(|v| v.as_u64()).unwrap_or(130) as u32,
                              s.settings.get("power_drop_limit").and_then(|v| v.as_f64()).unwrap_or(0.0),
                              s.settings.get("boost_stable_sample").and_then(|v| v.as_bool()).unwrap_or(false),
-                             s.settings.get("boost_stable_frames").and_then(|v| v.as_u64()).unwrap_or(30) as u32,
+                             s.settings.get("boost_stable_ms").and_then(|v| v.as_u64()).unwrap_or(500) as u32,
                              s.settings.get("boost_stable_tol").and_then(|v| v.as_f64()).unwrap_or(0.90))
                         };
                         {
@@ -404,9 +413,9 @@ async fn run(
                                     if let Some(saved) = curves.get(&car_id) {
                                         *a = ShiftAdvisor::from_dict(saved);
                                         a.throttle_min = cur_settings.0; a.alpha = cur_settings.1;
-                                        a.skip_frames = cur_settings.2; a.power_drop_limit = cur_settings.3;
+                                        a.skip_ms = cur_settings.2; a.power_drop_limit = cur_settings.3;
                                         a.boost_stable_sample = cur_settings.4;
-                                        a.boost_stable_frames = cur_settings.5;
+                                        a.boost_stable_ms = cur_settings.5;
                                         a.boost_stable_tol = cur_settings.6;
                                     }
                                     drop(a);
@@ -430,10 +439,10 @@ async fn run(
                                 }
                                 a.throttle_min = cur_settings.0;
                                 a.alpha = cur_settings.1;
-                                a.skip_frames = cur_settings.2;
+                                a.skip_ms = cur_settings.2;
                                 a.power_drop_limit = cur_settings.3;
                                 a.boost_stable_sample = cur_settings.4;
-                                a.boost_stable_frames = cur_settings.5;
+                                a.boost_stable_ms = cur_settings.5;
                                 a.boost_stable_tol = cur_settings.6;
                                 drop(a);
                                 drop(curves);
@@ -448,9 +457,9 @@ async fn run(
                         // them before — boost_stable_sample etc. stayed at defaults forever.
                         if let Ok(mut a) = udp_adv.advisor.lock() {
                             a.throttle_min = cur_settings.0; a.alpha = cur_settings.1;
-                            a.skip_frames = cur_settings.2; a.power_drop_limit = cur_settings.3;
+                            a.skip_ms = cur_settings.2; a.power_drop_limit = cur_settings.3;
                             a.boost_stable_sample = cur_settings.4;
-                            a.boost_stable_frames = cur_settings.5;
+                            a.boost_stable_ms = cur_settings.5;
                             a.boost_stable_tol = cur_settings.6;
                         }
 
@@ -606,8 +615,8 @@ async fn run(
                                                         if let Some(v) = payload.get("boost_stable_sample").and_then(|v| v.as_bool()) {
                                                             if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_sample = v; }
                                                         }
-                                                        if let Some(v) = payload.get("boost_stable_frames").and_then(|v| v.as_u64()) {
-                                                            if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_frames = v as u32; }
+                                                        if let Some(v) = payload.get("boost_stable_ms").and_then(|v| v.as_u64()) {
+                                                            if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_ms = v as u32; }
                                                         }
                                                         if let Some(v) = payload.get("boost_stable_tol").and_then(|v| v.as_f64()) {
                                                             if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_tol = v; }
@@ -618,8 +627,8 @@ async fn run(
                                                         if let Some(v) = payload.get("sample_throttle_min").and_then(|v| v.as_f64()) {
                                                             if let Ok(mut a) = adv2.advisor.lock() { a.throttle_min = v; }
                                                         }
-                                                        if let Some(v) = payload.get("sample_skip_frames").and_then(|v| v.as_u64()) {
-                                                            if let Ok(mut a) = adv2.advisor.lock() { a.skip_frames = v as u32; }
+                                                        if let Some(v) = payload.get("sample_skip_ms").and_then(|v| v.as_u64()) {
+                                                            if let Ok(mut a) = adv2.advisor.lock() { a.skip_ms = v as u32; }
                                                         }
                                                     }
                                                 }

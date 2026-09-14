@@ -16,19 +16,19 @@ pub struct ShiftAdvisor {
     pub(crate) shift_trigger: f64,
     pub(crate) alpha: f64,
     pub(crate) throttle_min: f64,
-    pub(crate) skip_frames: u32,
+    pub(crate) skip_ms: u32,
     pub(crate) power_drop_limit: f64,
     pub(crate) boost_stable_sample: bool,
-    pub(crate) boost_stable_frames: u32,
+    pub(crate) boost_stable_ms: u32,
     pub(crate) boost_stable_tol: f64,
     last_boost: f64,
     pub(crate) stable_value: f64,
     stable_value_set: bool,
-    steady_count: u32,
+    steady_since: Option<std::time::Instant>,
     boost_stable: bool,
 
     // Per-frame state
-    frames_since_shift: u32,
+    skip_until: Option<std::time::Instant>,
     last_gear_sample: Option<i32>,
     last_rpm_sample: f64,
     pub(crate) idle_rpm: f64,
@@ -54,10 +54,10 @@ impl Default for ShiftAdvisor {
         Self {
             bins: HashMap::new(), sample_count: 0, ready: false, peak_power_rpm: 0.0, locked: false,
             aggressiveness_pct: 0, limiter_threshold: 1.0, shift_trigger: 1.0,
-            alpha: 0.25, throttle_min: 0.95, skip_frames: 8, power_drop_limit: 0.0,
-            boost_stable_sample: false, boost_stable_frames: 30, boost_stable_tol: 0.90,
-            last_boost: 0.0, stable_value: 0.0, stable_value_set: false, steady_count: 0, boost_stable: false,
-            frames_since_shift: 999, last_gear_sample: None, last_rpm_sample: 0.0,
+            alpha: 0.25, throttle_min: 0.95, skip_ms: 130, power_drop_limit: 0.0,
+            boost_stable_sample: false, boost_stable_ms: 500, boost_stable_tol: 0.90,
+            last_boost: 0.0, stable_value: 0.0, stable_value_set: false, steady_since: None, boost_stable: false,
+            skip_until: None, last_gear_sample: None, last_rpm_sample: 0.0,
             idle_rpm: 1500.0, rpm_max: 8000.0, last_urgency: "hold".into(),
             hysteresis_timer: 0, last_gear_adv: None,
             fuel_cut_rpm: 0.0, fuel_cut_lo: 0.0, fc_peak: 0.0,
@@ -77,7 +77,7 @@ impl ShiftAdvisor {
         self.fuel_cut_rpm = 0.0; self.fuel_cut_lo = 0.0; self.fc_peaks.clear(); self.fc_valleys.clear();
         self.fc_peak = 0.0;
         self.stable_value = 0.0; self.stable_value_set = false;
-        self.last_boost = 0.0; self.steady_count = 0; self.boost_stable = false;
+        self.last_boost = 0.0; self.steady_since = None; self.boost_stable = false;
     }
 
     pub fn to_dict(&self) -> serde_json::Value {
@@ -181,17 +181,19 @@ impl ShiftAdvisor {
         self.idle_rpm = self.idle_rpm.max(500.0);
         self.rpm_max = self.rpm_max.max(1000.0);
 
-        // Boost stability: detect sustained level via exact frame-to-frame match
+        // Boost stability: detect sustained level via exact frame-to-frame match,
+        // confirmed by wall-clock duration (frame-rate independent)
         if self.boost_stable_sample {
             let same = (boost * 10.0).round() == (self.last_boost * 10.0).round();
             if same {
-                self.steady_count += 1;
-                if self.steady_count >= self.boost_stable_frames && boost >= 0.0 && speed > 0.0 {
+                if self.steady_since.is_none() { self.steady_since = Some(std::time::Instant::now()); }
+                if self.steady_since.is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(self.boost_stable_ms as u64))
+                    && boost >= 0.0 && speed > 0.0 {
                     self.stable_value = (boost * 10.0).round() / 10.0;
                     self.stable_value_set = true;
                 }
             } else {
-                self.steady_count = 0;
+                self.steady_since = None;
             }
             // Pass if boost matches established baseline
             self.boost_stable = boost >= self.stable_value * self.boost_stable_tol;
@@ -222,17 +224,19 @@ impl ShiftAdvisor {
         self.last_throttle = throttle;
         self.last_gear_fc = Some(gear);
 
-        // Shift skip
+        // Shift skip — wall-clock ms, frame-rate independent (FH6 61Hz vs
+        // FM8 ~124Hz packets both reject for the same real duration)
         if Some(gear) != self.last_gear_sample {
-            self.frames_since_shift = 0;
             self.last_gear_sample = Some(gear);
-        } else { self.frames_since_shift += 1; }
+            self.skip_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(self.skip_ms as u64));
+        }
+        let skipping = self.skip_until.is_some_and(|t| std::time::Instant::now() < t);
 
         let rpm_rising = rpm >= self.last_rpm_sample - 20.0;
 
         // FM8 countdown revving (speed 0, wheels not transmitting) must not feed the power curve
         if rpm >= 500.0 && throttle >= self.throttle_min && rpm_rising
-            && self.frames_since_shift >= self.skip_frames
+            && !skipping
             && self.boost_stable
             && speed > 0.0 && slip > 0.0
         {
@@ -354,11 +358,47 @@ mod tests {
     #[test]
     fn power_sampling_requires_motion_and_slip() {
         let mut a = ShiftAdvisor::new();
+        a.skip_ms = 0; // this test gates on motion/slip, not the shift window
         feed_n(&mut a, 20, 0.0, 0.5);    // countdown revving: stationary
         assert_eq!(a.sample_count, 0);
         feed_n(&mut a, 20, 30.0, 0.0);   // moving but wheels not transmitting
         assert_eq!(a.sample_count, 0);
         feed_n(&mut a, 20, 30.0, 0.05);  // normal driving
         assert!(a.sample_count > 0);
+    }
+
+    #[test]
+    fn shift_skip_ms_blocks_then_allows_sampling() {
+        let mut a = ShiftAdvisor::new();
+        a.skip_ms = 50;
+        // First feed on a gear arms the skip window — rejected inside it
+        feed_n(&mut a, 5, 30.0, 0.05);
+        assert_eq!(a.sample_count, 0);
+        // A gear change re-arms the window
+        a.feed(5000.0, 400.0, 200000.0, 1.0, 4, 0.0, 30.0, 0.05);
+        assert_eq!(a.sample_count, 0);
+        // Past the window, sampling resumes (same gear — no re-arm)
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        for _ in 0..3 {
+            a.feed(5000.0, 400.0, 200000.0, 1.0, 4, 0.0, 30.0, 0.05);
+        }
+        assert!(a.sample_count > 0);
+    }
+
+    #[test]
+    fn boost_stable_ms_confirms_after_window() {
+        let mut a = ShiftAdvisor::new();
+        a.skip_ms = 0;
+        a.boost_stable_sample = true;
+        a.boost_stable_ms = 50;
+        // Steady boost inside the window — baseline not established yet
+        feed_n(&mut a, 3, 30.0, 0.05);
+        assert!(!a.stable_value_set);
+        // Past the window — baseline confirmed
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        for _ in 0..3 {
+            a.feed(5000.0, 400.0, 200000.0, 1.0, 3, 0.0, 30.0, 0.05);
+        }
+        assert!(a.stable_value_set);
     }
 }

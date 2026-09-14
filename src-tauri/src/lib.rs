@@ -24,6 +24,9 @@ fn load_hud_config() -> HudConfig {
 
 pub struct HudState {
     pub window: Mutex<Option<tauri::WebviewWindow>>,
+    /// Raw HWND of the HUD window (as isize for Send), used by the ambient
+    /// luminance sampler. None when the HUD is closed.
+    pub hud_hwnd: Arc<Mutex<Option<isize>>>,
     pub cmd_rx: Mutex<std::sync::mpsc::Receiver<String>>,
     pub edit_mode: Arc<AtomicBool>,
     pub recording: Arc<AtomicBool>,
@@ -95,7 +98,7 @@ fn start_hud(app: tauri::AppHandle, state: tauri::State<HudState>) -> Result<(),
     if hud.is_some() { return Ok(()); }
     let cfg = load_hud_config();
     let mut builder = WebviewWindowBuilder::new(&app, "hud", tauri::WebviewUrl::App("hud.html".into()))
-        .title("Forza HUD").inner_size(cfg.w.unwrap_or(800.0), cfg.h.unwrap_or(150.0))
+        .title("Forza HUD").inner_size(cfg.w.unwrap_or(800.0), cfg.h.unwrap_or(250.0))
         .transparent(true).decorations(false).always_on_top(true).skip_taskbar(true)
         .resizable(false).shadow(false).visible(true);
     // Render mode is decided process-wide at startup: run() injects
@@ -103,6 +106,7 @@ fn start_hud(app: tauri::AppHandle, state: tauri::State<HudState>) -> Result<(),
     // WebView2 window (main + HUD) inherits it automatically.
     if let (Some(x), Some(y)) = (cfg.x, cfg.y) { builder = builder.position(x, y); }
     let window = builder.build().map_err(|e| format!("build: {e}"))?;
+    if let Ok(h) = window.hwnd() { *state.hud_hwnd.lock().unwrap() = Some(h.0 as isize); }
     window.set_ignore_cursor_events(true).map_err(|e| format!("cursor: {e}"))?;
     if cfg.edit_mode.unwrap_or(false) {
         state.edit_mode.store(true, Ordering::SeqCst);
@@ -139,10 +143,99 @@ fn save_hud_cfg(handle: &tauri::AppHandle) {
     }
 }
 
+// ── Ambient luminance sampler ──
+// The HUD is a transparent always-on-top window; its webview cannot see what
+// is behind it. To adapt glow to the scene, sample thin screen strips just
+// OUTSIDE the HUD's rect (same scene band, no self-capture, no display
+// affinity needed) at 2 Hz, EMA-smooth, and publish to server::ENV_LUMA.
+#[cfg(windows)]
+fn start_env_sampler(hud_hwnd: Arc<Mutex<Option<isize>>>) {
+    std::thread::spawn(move || {
+        let mut ema: Option<f32> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let Some(h) = *hud_hwnd.lock().unwrap() else { continue };
+            let hwnd = windows::Win32::Foundation::HWND(h as *mut std::ffi::c_void);
+            match sample_around_hud(hwnd) {
+                Some(l) => {
+                    let v = ema.map(|e: f32| e + (l - e) * 0.5).unwrap_or(l);
+                    ema = Some(v);
+                    server::ENV_LUMA.store(v.to_bits(), Ordering::Relaxed);
+                }
+                None => {
+                    // Window gone or capture failed: stop adapting until reopen.
+                    *hud_hwnd.lock().unwrap() = None;
+                    server::ENV_LUMA.store((-1.0f32).to_bits(), Ordering::Relaxed);
+                }
+            }
+        }
+    });
+}
+
+#[cfg(windows)]
+fn sample_around_hud(hwnd: windows::Win32::Foundation::HWND) -> Option<f32> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    unsafe {
+        let mut rc = RECT::default();
+        GetWindowRect(hwnd, &mut rc).ok()?;
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vx2 = vx + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vy2 = vy + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        let (l, t, r, b) = (rc.left, rc.top, rc.right, rc.bottom);
+        let strips = [
+            (l, t - 24, r, t - 6), // above
+            (l, b + 6, r, b + 24), // below
+            (l - 24, t, l - 6, b), // left
+            (r + 6, t, r + 24, b), // right
+        ];
+        let hdc = GetDC(None);
+        if hdc.is_invalid() { return None; }
+        let mut sum = 0f64;
+        let mut n = 0u32;
+        for &(sx0, sy0, sx1, sy1) in &strips {
+            let x0 = sx0.max(vx); let y0 = sy0.max(vy);
+            let x1 = sx1.min(vx2); let y1 = sy1.min(vy2);
+            let (w, h) = (x1 - x0, y1 - y0);
+            if w < 8 || h < 8 { continue; }
+            if let Some(lum) = grab_luma(hdc, x0, y0, w, h) { sum += lum; n += 1; }
+        }
+        ReleaseDC(None, hdc);
+        if n > 0 { Some((sum / n as f64) as f32) } else { None }
+    }
+}
+
+#[cfg(windows)]
+fn grab_luma(hdc_screen: windows::Win32::Graphics::Gdi::HDC, x: i32, y: i32, w: i32, h: i32) -> Option<f64> {
+    use windows::Win32::Graphics::Gdi::*;
+    unsafe {
+        let mem = CreateCompatibleDC(Some(hdc_screen));
+        let tw = 16;
+        let th = (16 * h / w).clamp(1, 16);
+        let bmp = CreateCompatibleBitmap(hdc_screen, tw, th);
+        let old = SelectObject(mem, bmp.into());
+        let ok = StretchBlt(mem, 0, 0, tw, th, Some(hdc_screen), x, y, w, h, SRCCOPY);
+        let mut buf = vec![0u8; (tw * th * 4) as usize];
+        let got = GetBitmapBits(bmp, buf.len() as i32, buf.as_mut_ptr() as *mut std::ffi::c_void);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        if !ok.as_bool() || got == 0 { return None; }
+        let mut s = 0f64;
+        for px in buf.chunks_exact(4) {
+            s += 0.114 * px[0] as f64 + 0.587 * px[1] as f64 + 0.299 * px[2] as f64;
+        }
+        Some(s / (tw * th) as f64 / 255.0)
+    }
+}
+
 #[tauri::command]
 fn stop_hud(app: tauri::AppHandle, state: tauri::State<HudState>) -> Result<(), String> {
     save_hud_cfg(&app);
     state.window.lock().map_err(|e| e.to_string())?.take();
+    *state.hud_hwnd.lock().unwrap() = None;
     state.edit_mode.store(false, Ordering::SeqCst);
     println!("[FT] HUD closed OK");
     Ok(())
@@ -385,16 +478,20 @@ pub fn run() {
     let rec_session = Arc::new(AtomicU64::new(0));
     let udp_pkt_count = Arc::new(AtomicU64::new(0));
     let toast = Arc::new(Mutex::new(None::<String>));
+    let hud_hwnd = Arc::new(Mutex::new(None::<isize>));
 
     server::start_server(cmd_tx, edit_mode.clone(), recording.clone(), playing.clone(), paused.clone(),
         pending_rec.clone(),
         pb_data.clone(), pb_idx.clone(), pb_total.clone(), car_curves_save.clone(), pb_receiver,
         rec_path_shared.clone(), rec_session.clone(), udp_pkt_count.clone(), toast.clone());
 
+    #[cfg(windows)]
+    start_env_sampler(hud_hwnd.clone());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(HudState {
-            window: Mutex::new(None), cmd_rx: Mutex::new(cmd_rx),
+            window: Mutex::new(None), cmd_rx: Mutex::new(cmd_rx), hud_hwnd,
             edit_mode, recording: recording.clone(), playing: playing.clone(),
             paused: paused.clone(), pending_rec: pending_rec.clone(), trim_secs: Mutex::new(0),
             rec_path: rec_path_shared, rec_session, udp_pkt_count, toast,
