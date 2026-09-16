@@ -193,7 +193,6 @@ const slipColor = computed(() => {
 .hud-rpm-bar { height: 100%; position: relative; }
 .hud-rpm-bar::after {
   content:""; position:absolute; right:0; top:0; width:1px; height:100%; background:#fff;
-  mix-blend-mode: plus-lighter;
   box-shadow: 0 0 calc(4px*var(--glow,1)) calc(1px*var(--glow,1)) rgba(255,255,255,calc(0.6*var(--glow,1))),
               0 0 calc(10px*var(--glow,1)) calc(2px*var(--glow,1)) rgba(255,255,255,calc(0.35*var(--glow,1)));
 }
@@ -208,7 +207,6 @@ const slipColor = computed(() => {
 }
 .hud-shift-line::after, .hud-limiter-line::after {
   content:""; position:absolute; inset:0; pointer-events:none;
-  mix-blend-mode: plus-lighter;
 }
 .hud-shift-line::after {
   box-shadow: 0 0 calc(4px*var(--glow,1)) calc(1px*var(--glow,1)) rgba(200,230,255,calc(0.5*var(--glow,1))),
@@ -220,7 +218,7 @@ const slipColor = computed(() => {
 }
 .hud-power-band {
   position: absolute; top: 2px; height: 1px;
-  background: #fff; mix-blend-mode: plus-lighter;
+  background: #fff;
 }
 .hud-info-row {
   display: flex; gap: 12px; font-size: 12px; opacity: 0.85; justify-content: center;

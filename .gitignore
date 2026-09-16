@@ -28,5 +28,8 @@ web/
 # 测试工具, 本地保留不进仓库
 tools/replay_udp.py
 tools/ws_smoke.mjs
+tools/analyze_fc.py
+tools/analyze_fc_rec.py
+tools/analyze_fc_compare.py
 # 本地版本留档 (release exe 副本), 不上传
 local-archive/
