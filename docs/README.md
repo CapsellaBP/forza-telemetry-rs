@@ -8,9 +8,9 @@
 
 ## 功能 / Features
 
-- **HUD 透明浮层 / HUD overlay** — 档位、时速、RPM、换挡线、断油线、功率带，可拖动缩放 / gear, speed, RPM, shift line, limiter line, power band, draggable & resizable
+- **HUD 透明浮层 / HUD overlay** — 档位、时速、RPM、换挡线、最大转速线、功率带，可拖动缩放 / gear, speed, RPM, shift line, max RPM line, power band, draggable & resizable
 - **换挡建议 / Shift advisor** — 自动学习每车功率曲线，提示 hold / near / shift / over / auto-learns each car's power curve with hold/near/shift/over advice
-- **功率曲线分析 / Power analysis** — 扭矩与功率双线图、断油检测、换挡点计算 / torque & power curves, fuel-cut detection, shift-point calculation
+- **功率曲线分析 / Power analysis** — 扭矩与功率双线图、最大转速检测、换挡点计算 / torque & power curves, max RPM detection, shift-point calculation
 - **轮胎与悬挂 / Tires & suspension** — 胎温、滑移率、悬挂行程实时监控 / real-time tire temp, slip ratio and suspension travel
 - **G 力 / G-force plot** — 横向/纵向加速度拖尾轨迹图 / lateral & longitudinal acceleration trail plot
 - **录制与回放 / Recording & playback** — 原始 UDP 包录制，按时间戳对齐回放 / raw UDP capture with timestamp-aligned playback

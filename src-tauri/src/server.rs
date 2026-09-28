@@ -113,9 +113,9 @@ impl Default for State {
         Self {
             raw: HashMap::new(), packet_count: 0, game: String::new(),
             settings: serde_json::json!({
-                "hud_opacity": 0.70, "hud_scale": 2.0, "shift_aggressiveness": 0,
+                "hud_opacity": 0.70, "hud_scale": 2.0,
                 "hud_backdrop": 0.30, "hud_glow": 1.0, "hud_backdrop_radius": 100, "hud_backdrop_smooth": 0.5,
-                "limiter_threshold": 1.0, "shift_trigger_pct": 1.0,
+                "red_flash_pct": 0.01,
                 "gear_yellow_start": 0.50, "rpm_bar_brightness": 1.0, "rpm_bar_hue": 0,
                 "power_band_pct": 0.93, "power_band_opacity": 0.5,
                 "gear_italic": true, "speed_italic": true, "label_italic": true,
@@ -133,7 +133,7 @@ impl Default for State {
 
 
                 "susp_thr1": 0.30, "susp_thr2": 0.55, "susp_thr3": 0.80,
-                "slip_warn": 0.10, "slip_danger": 0.50,
+                "slip_warn": 0.50, "slip_danger": 2.00, "slip_bar": true,
                 "sample_throttle_min": 0.95, "sample_skip_ms": 130, "curve_alpha": 0.25,
                 "power_drop_limit": 0.0,
                 "ev_detect_frames": 300,

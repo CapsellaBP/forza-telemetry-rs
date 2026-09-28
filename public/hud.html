@@ -89,10 +89,19 @@
   }
   #pwr-band { position: absolute; top: 2px; height: 1px; background: #fff; opacity: 0.6; mix-blend-mode: plus-lighter; }
 
+  /* Slip bar: max |slip ratio| across all four wheels, always on while moving.
+     Flat and dim by design (background instrument, not an alarm). Thresholds
+     are speed-scaled: lenient at crawl (the launch dig is not actionable),
+     full discipline from ~25 km/h. Zones: white <0.5, yellow, red >2.0. */
+  #slip-wrap { position: relative; width: 260px; height: 3px; background: rgba(255,255,255,0.06); margin: -2px 0 6px; }
+  #slip-bar { height: 100%; width: 0%; }
+
   #info-row { display: flex; gap: 12px; color: #fff; opacity: calc(var(--hud-opacity) * 0.85); font-size: 12px; text-shadow: 0 1px 3px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.4); }
 
   .strobe { animation: flash 0.08s steps(2) infinite alternate; }
   .bar-strobe { animation: bar-flash 0.08s steps(2) infinite alternate !important; }
+  .strobe-red { animation: flash-red 0.08s steps(2) infinite alternate; }
+  .bar-strobe-red { animation: bar-flash-red 0.08s steps(2) infinite alternate !important; }
   @keyframes flash {
     0%   { color: #3399ff; text-shadow: 0 0 calc(30px*var(--glow)) #3399ff; }
     100% { color: #fff; text-shadow: 0 0 calc(60px*var(--glow)) #88ccff; }
@@ -100,6 +109,14 @@
   @keyframes bar-flash {
     0% { background: linear-gradient(to right,#3399ff44,#3399ff); box-shadow: 0 0 calc(12px*var(--glow)) calc(3px*var(--glow)) rgba(51,153,255,calc(0.7*var(--glow))); }
     100% { background: linear-gradient(to right,#ffffff88,#fff); box-shadow: 0 0 calc(16px*var(--glow)) calc(5px*var(--glow)) rgba(200,220,255,calc(0.8*var(--glow))); }
+  }
+  @keyframes flash-red {
+    0%   { color: #ff3333; text-shadow: 0 0 calc(30px*var(--glow)) #ff3333; }
+    100% { color: #fff; text-shadow: 0 0 calc(60px*var(--glow)) #ff9999; }
+  }
+  @keyframes bar-flash-red {
+    0% { background: linear-gradient(to right,#ff330044,#ff3300); box-shadow: 0 0 calc(12px*var(--glow)) calc(3px*var(--glow)) rgba(255,51,0,calc(0.7*var(--glow))); }
+    100% { background: linear-gradient(to right,#ffffff88,#fff); box-shadow: 0 0 calc(16px*var(--glow)) calc(5px*var(--glow)) rgba(255,200,180,calc(0.8*var(--glow))); }
   }
 </style>
 </head>
@@ -120,6 +137,7 @@
       <div id="shift-line"></div>
       <div id="limiter-line"></div>
     </div>
+    <div id="slip-wrap"><div id="slip-bar"></div></div>
     <div id="info-row">
       <span id="rpm-text">0 rpm</span>
       <span id="hp-text">0 hp</span>
@@ -251,14 +269,58 @@ function paintBackdrop(){
 }
 window.addEventListener("resize",paintBackdrop);
 paintBackdrop();
-function rpmColor(pct,ys){
+// RPM bar brightness/hue: transform gradient stops in HSL space rather than a
+// CSS filter — filter would create a stacking context and isolate the bar cap
+// glow's additive (plus-lighter) blending with the backdrop. Stops come from a
+// tiny fixed palette, so results are memoized; defaults (1, 0) pass through.
+const _tintCache={};
+function tint(col,bri,hue){
+  if(bri===1&&!hue)return col;
+  const key=col+"|"+bri+"|"+hue,cached=_tintCache[key];
+  if(cached)return cached;
+  let r=0,g=0,b=0,a=1,ok=true;
+  if(col[0]==="#"){
+    const h=col.slice(1);
+    if(h.length>=6){r=parseInt(h.substr(0,2),16);g=parseInt(h.substr(2,2),16);b=parseInt(h.substr(4,2),16);if(h.length===8)a=parseInt(h.substr(6,2),16)/255;}
+    else ok=false;
+  }else{
+    const m=col.match(/[\d.]+/g);
+    if(m&&m.length>=3){r=+m[0];g=+m[1];b=+m[2];if(m.length>3)a=+m[3];}else ok=false;
+  }
+  if(!ok)return col;
+  r/=255;g/=255;b/=255;
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+  let h=0,sg=0,l=(mx+mn)/2;
+  if(mx!==mn){
+    const dd=mx-mn;
+    sg=l>0.5?dd/(2-mx-mn):dd/(mx+mn);
+    if(mx===r)h=(g-b)/dd+(g<b?6:0);else if(mx===g)h=(b-r)/dd+2;else h=(r-g)/dd+4;
+    h*=60;
+  }
+  h=(h+hue)%360;if(h<0)h+=360;
+  l=Math.max(0,Math.min(1,l*bri));
+  const c=(1-Math.abs(2*l-1))*sg,x=c*(1-Math.abs((h/60)%2-1)),mm=l-c/2;
+  let rr=0,gg=0,bb=0;
+  if(h<60){rr=c;gg=x;}else if(h<120){rr=x;gg=c;}else if(h<180){gg=c;bb=x;}
+  else if(h<240){gg=x;bb=c;}else if(h<300){rr=x;bb=c;}else{rr=c;bb=x;}
+  const R=Math.round((rr+mm)*255),G=Math.round((gg+mm)*255),B=Math.round((bb+mm)*255);
+  const out=a<1?`rgba(${R},${G},${B},${a})`:`#${((1<<24)+(R<<16)+(G<<8)+B).toString(16).slice(1)}`;
+  _tintCache[key]=out;
+  return out;
+}
+
+function rpmColor(pct,ys,bluePct){
   // Returns [from, to] gradient stops. NOTE: every stop must be a complete
   // color value — the old single-color + `${c}44` suffix pattern produced
   // invalid CSS ("rgba(...)44") in the dim state and killed the bar entirely.
-  if(pct<ys*100)return["rgba(255,255,255,0.12)","rgba(255,255,255,0.45)"];
-  const z=(100-ys*100)/3;
-  if(pct<ys*100+z)return["#ffdd0044","#ffdd00"];
-  if(pct<ys*100+2*z)return["#ff880044","#ff8800"];
+  // Zones anchor to the shift (blue) line: white→yellow→orange→red completes
+  // exactly at the blue line, so the full progression displays before the
+  // blue strobe takes over. Past the line: static red under the strobes.
+  const y0=ys*100,top=(bluePct>y0+1)?bluePct:100;
+  if(pct<y0)return["rgba(255,255,255,0.12)","rgba(255,255,255,0.45)"];
+  const z=(top-y0)/3;
+  if(pct<y0+z)return["#ffdd0044","#ffdd00"];
+  if(pct<y0+2*z)return["#ff880044","#ff8800"];
   return["#ff330044","#ff3300"];
 }
 
@@ -341,15 +403,18 @@ function connect(){
     $("rpm-text").textContent=Math.round(rpm)+" rpm";
     $("hp-text").textContent=Math.round((d.power_kw||0)*1.341)+" hp";
 
-    // RPM bar
+    // RPM bar — color zones anchor to the shift (blue) line so the full
+    // white→yellow→orange→red progression plays out left of it
     $("rpm-bar").style.width=rpmPct+"%";
-    if(!sa.limiter){const[c0,c1]=rpmColor(rpmPct,ys);$("rpm-bar").style.background=`linear-gradient(to right,${c0},${c1})`;}
+    const sr=sa.ready?sa.shift_rpm:0;
+    const srPct=sr>0?Math.max(0,Math.min(100,(sr-rpmIdle)/range*100)):0;
+    const[c0,c1]=rpmColor(rpmPct,ys,srPct>0?srPct:100);
+    const bri=s.rpm_bar_brightness??1,hue=s.rpm_bar_hue??0;
+    $("rpm-bar").style.background=`linear-gradient(to right,${tint(c0,bri,hue)},${tint(c1,bri,hue)})`;
 
     // Shift/limiter lines with display-layer EMA anti-flicker
     if(!window._ms){window._ms={sr:0,lr:100,pl:33,pw:30};}
     const ma=s.marker_ema_alpha||0.06;
-    const sr=sa.ready?sa.shift_rpm:0;
-    const srPct=sr>0?Math.max(0,Math.min(100,(sr-rpmIdle)/range*100)):0;
     window._ms.sr+=(srPct-window._ms.sr)*ma;
     $("shift-line").style.left=window._ms.sr+"%";
 
@@ -379,28 +444,55 @@ function connect(){
       $("pwr-band").style.display="";
     }
 
-    // Strobe
+    // Strobe: red flash (RPM within red_flash_pct of the limiter line's left
+    // edge) outranks the blue shift strobe. Both flash on top of the live
+    // gradient — the bar's static colors stay visible outside flash windows.
     const ur=sa.urgency;
-    if(ur==="shift"||ur==="over"){
-      $("gear").classList.add("strobe");$("gear").style.color="";
-      $("rpm-bar").classList.add("bar-strobe");
+    const redFlash=!d.is_ev&&rpmPct>=window._ms.lr-(s.red_flash_pct??0.01)*100;
+    if(redFlash){
+      $("gear").classList.add("strobe-red");$("gear").classList.remove("strobe");$("gear").style.color="";
+      $("rpm-bar").classList.add("bar-strobe-red");$("rpm-bar").classList.remove("bar-strobe");
+    }else if(ur==="shift"||ur==="over"){
+      $("gear").classList.add("strobe");$("gear").classList.remove("strobe-red");$("gear").style.color="";
+      $("rpm-bar").classList.add("bar-strobe");$("rpm-bar").classList.remove("bar-strobe-red");
     }else{
-      $("gear").classList.remove("strobe");
-      $("gear").style.color=ur==="near"?"#d2991d":ur==="over"?"#f85149":"#fff";
-      $("rpm-bar").classList.remove("bar-strobe");
+      $("gear").classList.remove("strobe");$("gear").classList.remove("strobe-red");
+      $("gear").style.color=ur==="near"?"#d2991d":"#fff";
+      $("rpm-bar").classList.remove("bar-strobe");$("rpm-bar").classList.remove("bar-strobe-red");
     }
 
     // SLIP
     const ms=d.max_slip||0;
-    $("slip").style.color=ms>(s.slip_danger||0.5)?"#ff3333":ms>(s.slip_warn||0.1)?"#ffcc00":"";
+    $("slip").style.color=ms>(s.slip_danger??2.0)?"#ff3333":ms>(s.slip_warn??0.5)?"#ffcc00":"";
 
     // EV
     if(d.is_ev){
       $("shift-line").style.display="none";$("limiter-line").style.display="none";
       $("pwr-band").style.display="none";$("rpm-bar").style.background="linear-gradient(to right,#3399ff44,#3399ff)";
-      $("gear").classList.remove("strobe");$("rpm-bar").classList.remove("bar-strobe");
+      $("gear").classList.remove("strobe");$("gear").classList.remove("strobe-red");
+      $("rpm-bar").classList.remove("bar-strobe");$("rpm-bar").classList.remove("bar-strobe-red");
     }else{
       $("shift-line").style.display="";$("limiter-line").style.display="";
+    }
+
+    // Slip bar: max |slip ratio| across all four wheels (driven wheels spin on
+    // throttle, any wheel can lock under braking — the worst wheel is the one
+    // that matters). Always on while moving; thresholds relax at crawl speed
+    // (launch dig isn't actionable + the ratio inflates at low speed anyway).
+    const sbShow=(s.slip_bar??true);
+    $("slip-wrap").style.opacity=sbShow?"1":"0";
+    if(sbShow){
+      $("slip-wrap").style.width=(s.rpm_bar_width||260)+"px";
+      const ts=d.tire_slip||[0,0,0,0];
+      let ls=0;
+      for(let k=0;k<4;k++){const v=Math.abs(ts[k]||0);if(v>ls)ls=v;}
+      window._ls=(window._ls??0)+((ls-(window._ls??0))*0.12);
+      const L=window._ls,kmh=d.speed_kmh||0;
+      const leni=Math.max(0,Math.min(1,(25-kmh)/20));
+      const yW=s.slip_warn??0.5,rD=s.slip_danger??2.0;
+      const yT=yW*(1+leni),rT=rD+1.5*leni;
+      $("slip-bar").style.width=Math.min(Math.log1p(L)/Math.log1p(100)*100,100)+"%";
+      $("slip-bar").style.background=L<yT?"rgba(255,255,255,0.6)":L<rT?"rgba(212,168,67,0.8)":"rgba(255,51,51,0.9)";
     }
   };
   ws.onclose=()=>setTimeout(connect,3000);

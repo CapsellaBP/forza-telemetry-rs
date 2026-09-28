@@ -13,8 +13,10 @@ function tempColor(t: number): string {
   if (t <= 0) return "#555"; if (t < 60) return "#4a90d9"; if (t < 80) return "#58a6ff"
   if (t < 95) return "#4ec46b"; if (t < 110) return "#d4a843"; return "#f14c4c"
 }
-function slipColor(s: number): string {
-  const a = Math.abs(s); if (a < 0.05) return "#4ec46b"; if (a < 0.15) return "#d4a843"; return "#f14c4c"
+function slipColor(v: number): string {
+  const a = Math.abs(v)
+  const warn = s('slip_warn', 0.5), danger = s('slip_danger', 2.0)
+  if (a < warn) return "#4ec46b"; if (a < danger) return "#d4a843"; return "#f14c4c"
 }
 </script>
 
@@ -27,15 +29,15 @@ function slipColor(s: number): string {
       <h3>滑移阈值</h3>
       <div class="row">
         <label>黄闪 <InfoTip>滑移率超过此值显示黄色警告</InfoTip></label>
-        <input type="range" min="1" max="50" :value="(s('slip_warn', 0.10)) * 100"
+        <input type="range" min="1" max="100" :value="(s('slip_warn', 0.50)) * 100"
           @input="emit('set', 'slip_warn', Number(($event.target as HTMLInputElement).value) / 100)">
-        <span class="val">{{ (s('slip_warn', 0.10)).toFixed(2) }}</span>
+        <span class="val">{{ (s('slip_warn', 0.50)).toFixed(2) }}</span>
       </div>
       <div class="row">
         <label>红标 <InfoTip>滑移率超过此值显示红色警告（严重打滑）</InfoTip></label>
-        <input type="range" min="5" max="100" :value="(s('slip_danger', 0.50)) * 100"
+        <input type="range" min="5" max="400" :value="(s('slip_danger', 2.00)) * 100"
           @input="emit('set', 'slip_danger', Number(($event.target as HTMLInputElement).value) / 100)">
-        <span class="val">{{ (s('slip_danger', 0.50)).toFixed(2) }}</span>
+        <span class="val">{{ (s('slip_danger', 2.00)).toFixed(2) }}</span>
       </div>
     </div>
 
@@ -61,16 +63,16 @@ function slipColor(s: number): string {
         <h3>滑移率</h3>
         <div class="tire-grid">
           <div class="t-row">
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[0]??0)/0.5*100,100)+'%', background: slipColor(slipVals[0]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[0]??0)/2*100,100)+'%', background: slipColor(slipVals[0]??0) }"></div></div>
             <div class="t-meta"><span class="t-pos">FL</span><span class="t-num" :style="{ color: slipColor(slipVals[0]??0) }">{{ Math.abs(slipVals[0]??0).toFixed(3).padStart(5,'0') }}</span></div>
             <div class="t-meta"><span class="t-pos">FR</span><span class="t-num" :style="{ color: slipColor(slipVals[1]??0) }">{{ Math.abs(slipVals[1]??0).toFixed(3).padStart(5,'0') }}</span></div>
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[1]??0)/0.5*100,100)+'%', background: slipColor(slipVals[1]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[1]??0)/2*100,100)+'%', background: slipColor(slipVals[1]??0) }"></div></div>
           </div>
           <div class="t-row">
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[2]??0)/0.5*100,100)+'%', background: slipColor(slipVals[2]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[2]??0)/2*100,100)+'%', background: slipColor(slipVals[2]??0) }"></div></div>
             <div class="t-meta"><span class="t-pos">RL</span><span class="t-num" :style="{ color: slipColor(slipVals[2]??0) }">{{ Math.abs(slipVals[2]??0).toFixed(3).padStart(5,'0') }}</span></div>
             <div class="t-meta"><span class="t-pos">RR</span><span class="t-num" :style="{ color: slipColor(slipVals[3]??0) }">{{ Math.abs(slipVals[3]??0).toFixed(3).padStart(5,'0') }}</span></div>
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[3]??0)/0.5*100,100)+'%', background: slipColor(slipVals[3]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[3]??0)/2*100,100)+'%', background: slipColor(slipVals[3]??0) }"></div></div>
           </div>
         </div>
       </div>

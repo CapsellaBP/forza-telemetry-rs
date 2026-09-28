@@ -31,5 +31,9 @@ tools/ws_smoke.mjs
 tools/analyze_fc.py
 tools/analyze_fc_rec.py
 tools/analyze_fc_compare.py
+tools/analyze_slip.py
+tools/analyze_launch.py
+tools/analyze_scripted.py
+tools/mkhudtest.cjs
 # 本地版本留档 (release exe 副本), 不上传
 local-archive/

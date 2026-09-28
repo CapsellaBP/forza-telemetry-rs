@@ -11,9 +11,6 @@ pub struct ShiftAdvisor {
     pub(crate) locked: bool,
 
     // Settings (pub for server access)
-    pub(crate) aggressiveness_pct: i32,
-    pub(crate) limiter_threshold: f64,
-    pub(crate) shift_trigger: f64,
     pub(crate) alpha: f64,
     pub(crate) throttle_min: f64,
     pub(crate) skip_ms: u32,
@@ -41,6 +38,7 @@ pub struct ShiftAdvisor {
     fuel_cut_rpm: f64,
     fuel_cut_lo: f64,
     fc_peak: f64,
+    fc_peaks: Vec<f64>,
     fc_valleys: Vec<f64>,
     last_rpm_tick: f64,
     last_throttle: f64,
@@ -52,7 +50,6 @@ impl Default for ShiftAdvisor {
     fn default() -> Self {
         Self {
             bins: HashMap::new(), sample_count: 0, ready: false, peak_power_rpm: 0.0, locked: false,
-            aggressiveness_pct: 0, limiter_threshold: 1.0, shift_trigger: 1.0,
             alpha: 0.25, throttle_min: 0.95, skip_ms: 130, power_drop_limit: 0.0,
             boost_stable_sample: false, boost_stable_ms: 500, boost_stable_tol: 0.90,
             last_boost: 0.0, stable_value: 0.0, stable_value_set: false, steady_since: None, boost_stable: false,
@@ -60,7 +57,7 @@ impl Default for ShiftAdvisor {
             idle_rpm: 1500.0, rpm_max: 8000.0, last_urgency: "hold".into(),
             hysteresis_timer: 0, last_gear_adv: None,
             fuel_cut_rpm: 0.0, fuel_cut_lo: 0.0, fc_peak: 0.0,
-            fc_valleys: Vec::new(),
+            fc_peaks: Vec::new(), fc_valleys: Vec::new(),
             last_rpm_tick: 0.0, last_throttle: 0.0, last_gear_fc: None, fc_rising: true,
         }
     }
@@ -73,7 +70,7 @@ impl ShiftAdvisor {
 
     pub fn reset(&mut self) {
         self.bins.clear(); self.sample_count = 0; self.peak_power_rpm = 0.0; self.ready = false;
-        self.fuel_cut_rpm = 0.0; self.fuel_cut_lo = 0.0; self.fc_valleys.clear();
+        self.fuel_cut_rpm = 0.0; self.fuel_cut_lo = 0.0; self.fc_peaks.clear(); self.fc_valleys.clear();
         self.fc_peak = 0.0;
         self.stable_value = 0.0; self.stable_value_set = false;
         self.last_boost = 0.0; self.steady_since = None; self.boost_stable = false;
@@ -169,9 +166,7 @@ impl ShiftAdvisor {
 
     fn calc_optimal(&self) -> f64 {
         if !self.ready { return self.rpm_max * 0.90; }
-        let range = self.rpm_max - self.idle_rpm;
-        let offset = self.aggressiveness_pct as f64 / 100.0 * range;
-        (self.idle_rpm + 500.0).max((self.rpm_max - 200.0).min(self.peak_power_rpm + offset))
+        (self.idle_rpm + 500.0).max((self.rpm_max - 200.0).min(self.peak_power_rpm))
     }
 
     pub fn feed(&mut self, rpm: f64, torque: f64, power: f64, throttle: f64, gear: i32, boost: f64, speed: f64, slip: f64) {
@@ -213,15 +208,25 @@ impl ShiftAdvisor {
                 // torque stays positive at full throttle — reject those so
                 // they can't drag the limiter line left.
                 if torque < 0.0 {
+                    self.fc_peaks.push(self.fc_peak);
+                    if self.fc_peaks.len() > 30 { self.fc_peaks.remove(0); }
                     self.fc_valleys.push(rpm);
                     if self.fc_valleys.len() > 30 { self.fc_valleys.remove(0); }
+                    let mut peaks = self.fc_peaks.clone(); peaks.sort_by(|a,b| a.partial_cmp(b).unwrap());
+                    let peak_med = peaks[peaks.len()/2];
                     let mut valleys = self.fc_valleys.clone(); valleys.sort_by(|a,b| a.partial_cmp(b).unwrap());
                     self.fuel_cut_lo = valleys[valleys.len()/2];
-                    // The limiter is a hard ceiling per car: track the highest
-                    // confirmed cut. Never moves down — a lower peak carries no
-                    // information (the cut still happened), a higher one
-                    // disproves the old value and snaps the line right at once.
-                    self.fuel_cut_rpm = self.fuel_cut_rpm.max(self.fc_peak);
+                    // Up: a higher confirmed peak disproves the old ceiling and
+                    // snaps the line right at once. Down: follow the window
+                    // median — a run of confirmed cuts at a lower ceiling (e.g.
+                    // after an engine swap) walks the line back down, while a
+                    // stray low blip can't drag it. The torque gate above keeps
+                    // false events out of the window entirely.
+                    if self.fc_peak > self.fuel_cut_rpm {
+                        self.fuel_cut_rpm = self.fc_peak;
+                    } else {
+                        self.fuel_cut_rpm = peak_med;
+                    }
                 }
                 self.fc_rising = false;
             }
@@ -288,7 +293,7 @@ impl ShiftAdvisor {
         }
 
         let limiter_rpm = if self.fuel_cut_rpm > 0.0 { self.fuel_cut_rpm }
-            else { (rpm_max * self.limiter_threshold).round() };
+            else { rpm_max.round() };
         let limiter_zone = limiter_rpm > 0.0 && rpm > limiter_rpm * 0.99;
 
         let (optimal, pct, urgency) = if !self.ready {
@@ -297,11 +302,10 @@ impl ShiftAdvisor {
         } else {
             let opt = self.calc_optimal();
             let pct = if opt > 0.0 { rpm / opt } else { 0.0 };
-            let trigger = self.shift_trigger;
             let urg = if throttle < 0.35 { "hold" }
-                else if pct < trigger - 0.10 { "hold" }
-                else if pct < trigger { "near" }
-                else if pct < trigger + 0.10 { "shift" }
+                else if pct < 0.90 { "hold" }
+                else if pct < 1.0 { "near" }
+                else if pct < 1.10 { "shift" }
                 else { "over" };
             (opt, pct, urg)
         };
@@ -413,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn fuel_cut_snaps_up_and_never_back_down() {
+    fn fuel_cut_snaps_up_and_drifts_down_with_median() {
         let mut a = ShiftAdvisor::new();
         feed_bounce(&mut a, 7800.0, -200.0);
         feed_bounce(&mut a, 7820.0, -200.0);
@@ -421,9 +425,16 @@ mod tests {
         // One confirmed bounce at a higher ceiling pulls the line right at once
         feed_bounce(&mut a, 7900.0, -200.0);
         assert_eq!(a.fuel_cut_rpm, 7900.0);
-        // Lower confirmed peaks never drag it back down
-        feed_bounce(&mut a, 7810.0, -200.0);
-        assert_eq!(a.fuel_cut_rpm, 7900.0);
+        // A couple of lower peaks can't drag it down — median still sits high
+        feed_bounce(&mut a, 7600.0, -200.0);
+        feed_bounce(&mut a, 7600.0, -200.0);
+        assert!(a.fuel_cut_rpm > 7700.0);
+        // A sustained run at a lower ceiling (engine swap) walks it back down
+        for _ in 0..30 { feed_bounce(&mut a, 7600.0, -200.0); }
+        assert_eq!(a.fuel_cut_rpm, 7600.0);
+        // And it can snap up again from there
+        feed_bounce(&mut a, 7700.0, -200.0);
+        assert_eq!(a.fuel_cut_rpm, 7700.0);
     }
 
     #[test]

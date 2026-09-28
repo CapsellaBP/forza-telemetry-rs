@@ -59,9 +59,10 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 ### HUD 浮层
 
 - 点击"启动 HUD"打开透明浮层窗口
-- 浮层显示：档位、时速、RPM 条、换挡线（蓝）、断油线（红）、功率带（白）
+- 浮层显示：档位、时速、RPM 条、换挡线（蓝）、最大转速线（红）、功率带（白）
 - 背景罩：HUD 区域圆角柔光板，浓度与圆角半径可调（HUD 页"外观"），0=关闭；文字带兜底阴影；换挡线/爆闪光晕强度可调，并随场景亮度自动缩放（白天收小、夜晚放开）
-- 爆闪提示：达到换挡点时档位和 RPM 条闪烁蓝光
+- 闪烁提示：达到换挡点时档位和 RPM 条闪烁蓝光；接近最大转速时闪烁红光（提前量可调）
+- 滑移条：RPM 条下方常显四轮最大滑移率（白 <0.5 / 黄 0.5-2.0 / 红 >2.0 正在打滑）；起步低速阶段自动放宽判定，可在 HUD 页关闭
 - G 力浮动：加速/刹车/过弯时浮层整体漂移
 - 编辑模式：点击"激活 HUD"可拖动窗口、调整大小，黄色虚线框表示编辑中
 - 停车自动隐藏，起步恢复显示
@@ -75,8 +76,8 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 
 - 自动学习当前车辆的功率曲线（EMA 采样）；仅在行驶且车轮有滑移时采样
 - 在 HUD 和总览页显示换挡建议：hold（保持）/ near（接近）/ shift（换挡）/ over（超转）
-- 自动检测断油转速
-- 自动识别电动车（隐藏换挡/断油线；Motorsport 禁用）
+- 自动检测最大转速（即断油时的转速）
+- 自动识别电动车（隐藏换挡线/最大转速线；Motorsport 禁用）
 - 换车时自动保存旧车曲线、加载新车曲线
 - 可锁定曲线防止继续采样（双击功率图 / 按钮 / 总览车况卡片）
 - 增压稳定采样：仅涡轮车有效，增压稳定后才采，避免爬升段低质量数据。动力页可调参数
@@ -162,9 +163,10 @@ The left sidebar has 8 tabs:
 ### HUD Overlay
 
 - Click "Start HUD" to open the transparent overlay window
-- Displays: gear, speed, RPM bar, shift line (blue), limiter line (red), power band (white)
+- Displays: gear, speed, RPM bar, shift line (blue), max RPM line (red), power band (white)
 - Backdrop: rounded soft plate behind HUD content with adjustable opacity and corner radius (HUD tab → Appearance); 0 = off. Text carries a fallback shadow; marker/strobe glow intensity adjustable and auto-scaled by ambient scene brightness (retracts in daylight, opens in the dark)
-- Strobe flash: gear and RPM bar flash blue when reaching shift point
+- Strobe flash: gear and RPM bar flash blue at the shift point, and flash red when approaching max RPM (adjustable lead)
+- Slip bar: always-on max |slip ratio| across all four wheels under the RPM bar (white <0.5 / yellow 0.5-2.0 / red >2.0 = spinning or locking); thresholds relax automatically at crawl speed (launch dig); can be disabled on the HUD tab
 - G-force float: overlay drifts with acceleration/braking/cornering
 - Edit mode: click "Activate HUD" to drag and resize the window (yellow dashed border)
 - Auto-hides when parked, reappears when moving
@@ -178,8 +180,8 @@ The Settings tab offers three render modes: Auto / Software / Hardware. Switchin
 
 - Automatically learns the current car's power curve (EMA sampling); samples only while moving with wheel slip
 - Displays shift advice on HUD and Dashboard: hold / near / shift / over
-- Auto-detects fuel cut RPM
-- Auto-detects electric vehicles (hides shift/limiter lines; disabled for Motorsport)
+- Auto-detects max RPM (the RPM at fuel cut)
+- Auto-detects electric vehicles (hides shift/max-RPM lines; disabled for Motorsport)
 - Saves curve on car change, loads saved curve on return
 - Lock curve to prevent further sampling (double-click power chart / button / dashboard info card)
 - Boost stable sampling: turbo cars only, waits for boost to stabilize before sampling. Parameters on Power page

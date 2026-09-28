@@ -114,19 +114,7 @@ onMounted(() => nextTick(drawPower))
 
     <div class="two-col">
       <div class="card">
-        <h3>换挡参数 <span class="tag">每车</span></h3>
-        <div class="row">
-          <label>激进程度 <InfoTip>负=延后换挡（高转），正=提前换挡。每车独立</InfoTip></label>
-          <input type="range" min="-40" max="40" :value="s('shift_aggressiveness', 0)"
-            @input="emit('set', 'shift_aggressiveness', Number(($event.target as HTMLInputElement).value))">
-          <span class="val">{{ s('shift_aggressiveness', 0) }}%</span>
-        </div>
-        <div class="row">
-          <label>断油阈值 <InfoTip>判定断油的 RPM 百分比。低于此值不触发断油警告</InfoTip></label>
-          <input type="range" min="90" max="100" :value="(s('limiter_threshold', 1.0)) * 100"
-            @input="emit('set', 'limiter_threshold', Number(($event.target as HTMLInputElement).value) / 100)">
-          <span class="val">{{ ((s('limiter_threshold', 1.0)) * 100).toFixed(0) }}%</span>
-        </div>
+        <h3>功率带</h3>
         <div class="row">
           <label>功率带阈值 <InfoTip>峰值功率百分比。高于此值的 RPM 区间计入功率带（HUD 白色带）。全局设置</InfoTip></label>
           <input type="range" min="50" max="100" :value="(s('power_band_pct', 0.93)) * 100"
@@ -140,7 +128,7 @@ onMounted(() => nextTick(drawPower))
       <div class="data-grid">
         <div class="d-item"><span class="lbl">峰值功率</span><span class="v">{{ telemetry?.shift_advice?.peak_power_rpm?.toFixed(0) ?? "-" }} RPM</span></div>
         <div class="d-item"><span class="lbl">换挡点</span><span class="v">{{ telemetry?.shift_advice?.shift_rpm?.toFixed(0) ?? "-" }} RPM</span></div>
-        <div class="d-item"><span class="lbl">断油点</span><span class="v" :style="{ color: telemetry?.shift_advice?.fuel_cut_rpm ? 'var(--red)' : '' }">{{ telemetry?.shift_advice?.fuel_cut_rpm?.toFixed(0) || telemetry?.shift_advice?.limiter_rpm?.toFixed(0) || "-" }} RPM</span></div>
+        <div class="d-item"><span class="lbl">最大转速</span><span class="v" :style="{ color: telemetry?.shift_advice?.fuel_cut_rpm ? 'var(--red)' : '' }">{{ telemetry?.shift_advice?.fuel_cut_rpm?.toFixed(0) || telemetry?.shift_advice?.limiter_rpm?.toFixed(0) || "-" }} RPM</span></div>
         <div class="d-item"><span class="lbl">采样数</span><span class="v">{{ telemetry?.shift_advice?.samples ?? 0 }}</span></div>
         <div class="d-item"><span class="lbl">增压</span><span class="v">{{ telemetry?.boost_psi?.toFixed(1) ?? "-" }} psi<span v-if="boostStableOn" class="boost-tag" :class="{ stable: boostStable }">{{ boostStable ? '稳' : '等' }}</span></span></div>
         <div class="d-item"><span class="lbl">稳定值</span><span class="v">{{ telemetry?.curve?.stable_value_set ? (telemetry.curve.stable_value as number).toFixed(1) + ' psi' : '-' }}</span></div>
@@ -221,7 +209,7 @@ onMounted(() => nextTick(drawPower))
     <div class="card">
       <h3>EV 检测 <span class="tag">Motorsport 禁用</span></h3>
       <div class="row">
-        <label>检测帧数 <InfoTip>全油门时档位≤2 持续 N 帧判为电车（自动隐藏换挡/断油线）</InfoTip></label>
+        <label>检测帧数 <InfoTip>全油门时档位≤2 持续 N 帧判为电车（自动隐藏换挡线/最大转速线）</InfoTip></label>
         <input type="range" min="100" max="2000" step="50" :value="s('ev_detect_frames', 300)"
           @input="emit('set', 'ev_detect_frames', Number(($event.target as HTMLInputElement).value))">
         <span class="val">{{ s('ev_detect_frames', 300) }}</span>

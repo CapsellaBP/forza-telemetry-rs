@@ -87,7 +87,7 @@ python tools/capture_raw.py 10   # 抓真实数据 (10 秒)
 | `lib.rs` | Tauri 命令、HUD 窗口、录制/回放、HUD 配置持久化 |
 | `server.rs` | UDP 监听、WebSocket 广播、设置管理、回放推进、EV 检测 |
 | `telemetry.rs` | FH 324B / Motorsport 331B Sled+Dash 解析（按包长分派）+ detect_pkt_size + 测试 |
-| `shift.rs` | 换挡引擎：EMA 采样、峰值检测、断油识别、增压稳定过滤 |
+| `shift.rs` | 换挡引擎：EMA 采样、峰值检测、最大转速识别、增压稳定过滤 |
 
 ### 录制/回放命令
 

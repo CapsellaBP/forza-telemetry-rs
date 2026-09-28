@@ -27,11 +27,17 @@ const speed = computed(() => String(Math.round(props.telemetry?.speed_kmh ?? 0))
 const gear = computed(() => props.telemetry?.gear ?? 1)
 function gearLabel(g: number) { return g === 0 ? "R" : g === -1 ? "N" : String(g ?? "-") }
 
+const redZone = computed(() => {
+  if (props.telemetry?.is_ev) return false
+  const rf = (settings.value.red_flash_pct ?? 0.01) * 100
+  return rpmPct.value >= limiterPct.value - rf
+})
+
 const gearColor = computed(() => {
+  if (redZone.value) return "var(--red)"
   const a = props.telemetry?.shift_advice
   if (!a) return "var(--text)"
-  return a.urgency === "over" ? "var(--red)" :
-         a.urgency === "shift" ? "#3399ff" :
+  return a.urgency === "over" || a.urgency === "shift" ? "#3399ff" :
          a.urgency === "near" ? "var(--orange)" : "var(--text)"
 })
 
@@ -47,12 +53,15 @@ const boostPsi = computed(() => props.telemetry?.boost_psi ?? 0)
 
 const yellowStart = computed(() => settings.value.gear_yellow_start ?? 0.5)
 
-function rpmColor(pct: number): string {
-  const ys = yellowStart.value * 100
-  if (pct < ys) return "rgba(255,255,255,0.45)"
-  const zone = (100 - ys) / 3
-  if (pct < ys + zone) return "#ffdd00"
-  if (pct < ys + 2 * zone) return "#ff8800"
+function rpmColor(pct: number, bluePct: number): string {
+  // Zones anchor to the shift (blue) line so the full progression displays
+  // left of it; past the line stays red under the strobes. Fallback: full range.
+  const y0 = yellowStart.value * 100
+  const top = bluePct > y0 + 1 ? bluePct : 100
+  if (pct < y0) return "rgba(255,255,255,0.45)"
+  const zone = (top - y0) / 3
+  if (pct < y0 + zone) return "#ffdd00"
+  if (pct < y0 + 2 * zone) return "#ff8800"
   return "#ff3300"
 }
 
@@ -87,8 +96,29 @@ const pbLoPct = computed(() => {
 const editMode = computed(() => !!settings.value.hud_edit_mode)
 
 const maxSlip = computed(() => props.telemetry?.max_slip ?? 0)
-const slipWarn = computed(() => settings.value.slip_warn ?? 0.1)
-const slipDanger = computed(() => settings.value.slip_danger ?? 0.5)
+
+// Slip bar: max |slip| over all four wheels, EMA-smoothed like the real HUD;
+// speed-scaled leniency below 25 km/h
+const slipVal = computed(() => {
+  const t = props.telemetry
+  if (!t || !(settings.value.slip_bar ?? true)) return null
+  const ts: number[] = t.tire_slip ?? [0, 0, 0, 0]
+  let m = 0
+  for (const v of ts) { const a = Math.abs(v ?? 0); if (a > m) m = a }
+  const w = window as any
+  w._pvSlip = (w._pvSlip ?? 0) + ((m - (w._pvSlip ?? 0)) * 0.12)
+  return w._pvSlip
+})
+const slipBarColor = computed(() => {
+  const kmh = props.telemetry?.speed_kmh ?? 0
+  const leni = Math.max(0, Math.min(1, (25 - kmh) / 20))
+  const yW = settings.value.slip_warn ?? 0.5, rD = settings.value.slip_danger ?? 2.0
+  const yT = yW * (1 + leni), rT = rD + 1.5 * leni
+  const L = slipVal.value ?? 0
+  return L < yT ? "rgba(255,255,255,0.6)" : L < rT ? "rgba(212,168,67,0.8)" : "rgba(255,51,51,0.9)"
+})
+const slipWarn = computed(() => settings.value.slip_warn ?? 0.5)
+const slipDanger = computed(() => settings.value.slip_danger ?? 2.0)
 const slipColor = computed(() => {
   if (maxSlip.value > slipDanger.value) return "#ff3333"
   if (maxSlip.value > slipWarn.value) return "#ffcc00"
@@ -124,12 +154,16 @@ const slipColor = computed(() => {
     </div>
 
     <div class="hud-rpm-wrap">
-      <div class="hud-rpm-bar" :style="{ width: rpmPct + '%', background: rpmColor(rpmPct), filter: 'brightness(' + rpmBright + ') hue-rotate(' + rpmHue + 'deg)' }"></div>
+      <div class="hud-rpm-bar" :style="{ width: rpmPct + '%', background: rpmColor(rpmPct, shiftLinePct > 0 ? shiftLinePct : 100), filter: 'brightness(' + rpmBright + ') hue-rotate(' + rpmHue + 'deg)' }"></div>
       <div class="hud-shift-line" :style="{ left: shiftLinePct + '%' }"></div>
       <div class="hud-limiter-line" :style="{ left: limiterPct + '%' }"></div>
       <div class="hud-power-band"
         :style="{ left: pbLoPct.left + '%', width: pbLoPct.width + '%', opacity: powerBandOpacity }">
       </div>
+    </div>
+    <div v-if="slipVal !== null"
+      style="position:relative;height:3px;background:rgba(255,255,255,0.06);margin:-2px 0 4px">
+      <div :style="{ width: Math.min(Math.log1p(slipVal) / Math.log1p(100) * 100, 100) + '%', height: '100%', background: slipBarColor }"></div>
     </div>
 
     <div class="hud-info-row">

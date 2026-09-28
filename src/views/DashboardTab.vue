@@ -37,8 +37,12 @@ function tempColor(t: number): string {
   if (t <= 0) return "#555"; if (t < 60) return "#4a90d9"; if (t < 80) return "#58a6ff"
   if (t < 95) return "#4ec46b"; if (t < 110) return "#d4a843"; return "#f14c4c"
 }
-function slipColor(s: number): string {
-  const a = Math.abs(s); if (a < 0.05) return "#4ec46b"; if (a < 0.15) return "#d4a843"; return "#f14c4c"
+function slipColor(v: number): string {
+  const s = props.telemetry?.settings
+  const a = Math.abs(v)
+  if (a >= (s?.slip_danger ?? 2.0)) return "#f14c4c"
+  if (a >= (s?.slip_warn ?? 0.5)) return "#d4a843"
+  return "#4ec46b"
 }
 
 const suspOrder = [2, 0, 1, 3]
@@ -265,16 +269,16 @@ onMounted(() => nextTick(drawPower))
         <div class="card-label">滑移率</div>
         <div class="tire-inner">
           <div class="t-row">
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[0]??0)/0.5*100,100)+'%', background: slipColor(slipVals[0]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[0]??0)/2*100,100)+'%', background: slipColor(slipVals[0]??0) }"></div></div>
             <div class="t-meta"><span class="t-pos">FL</span><span class="t-num" :style="{ color: slipColor(slipVals[0]??0) }">{{ Math.abs(slipVals[0]??0).toFixed(3).padStart(5,'0') }}</span></div>
             <div class="t-meta"><span class="t-pos">FR</span><span class="t-num" :style="{ color: slipColor(slipVals[1]??0) }">{{ Math.abs(slipVals[1]??0).toFixed(3).padStart(5,'0') }}</span></div>
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[1]??0)/0.5*100,100)+'%', background: slipColor(slipVals[1]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[1]??0)/2*100,100)+'%', background: slipColor(slipVals[1]??0) }"></div></div>
           </div>
           <div class="t-row">
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[2]??0)/0.5*100,100)+'%', background: slipColor(slipVals[2]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[2]??0)/2*100,100)+'%', background: slipColor(slipVals[2]??0) }"></div></div>
             <div class="t-meta"><span class="t-pos">RL</span><span class="t-num" :style="{ color: slipColor(slipVals[2]??0) }">{{ Math.abs(slipVals[2]??0).toFixed(3).padStart(5,'0') }}</span></div>
             <div class="t-meta"><span class="t-pos">RR</span><span class="t-num" :style="{ color: slipColor(slipVals[3]??0) }">{{ Math.abs(slipVals[3]??0).toFixed(3).padStart(5,'0') }}</span></div>
-            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[3]??0)/0.5*100,100)+'%', background: slipColor(slipVals[3]??0) }"></div></div>
+            <div class="t-gauge"><div class="t-fill" :style="{ height: Math.min(Math.abs(slipVals[3]??0)/2*100,100)+'%', background: slipColor(slipVals[3]??0) }"></div></div>
           </div>
         </div>
       </div>
