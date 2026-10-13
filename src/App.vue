@@ -43,11 +43,13 @@ connectWs()
 // ── Status indicators ──
 const sysState = computed(() => {
   if (!connected.value) return "off"       // red = disconnected
-  const has = telemetry.value?.pkt_count > 0 || telemetry.value?.playing
+  const stale = !!telemetry.value?.data_stale
+  const has = (telemetry.value?.pkt_count > 0 || telemetry.value?.playing) && !stale
   return has ? "sys-on" : "sys-ready"       // blue = data, green = ready
 })
 const sysTitle = computed(() => {
   if (!connected.value) return "断开"
+  if (telemetry.value?.data_stale && telemetry.value?.pkt_count > 0) return "数据停滞，等待恢复"
   if (telemetry.value?.pkt_count > 0) {
     const game = telemetry.value?.game === "motorsport" ? "Motorsport" : "Horizon"
     return `数据接收中 (${game} · ${pktRate.value} 包/秒 · ${telemetry.value?.ws_clients ?? 0} 连接)`
@@ -78,9 +80,21 @@ const recTitle = computed(() => {
   return "录放待机"
 })
 
+// Slider throttle: @input fires per pixel of drag, and every set_setting also
+// writes hud-settings.json to disk on the backend. Leading edge keeps the
+// live preview instant; trailing edge guarantees the final value lands.
+const setLast: Record<string, number> = {}
+const setTimers: Record<string, ReturnType<typeof setTimeout>> = {}
 function sendSetting(key: string, value: any) {
-  if (ws && ws.readyState === WebSocket.OPEN)
-    ws.send(JSON.stringify({ action: "set_setting", payload: { [key]: value } }))
+  const send = () => {
+    if (ws && ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ action: "set_setting", payload: { [key]: value } }))
+    setLast[key] = Date.now()
+  }
+  const wait = 66 - (Date.now() - (setLast[key] ?? 0))
+  clearTimeout(setTimers[key])
+  if (wait <= 0) send()
+  else setTimers[key] = setTimeout(send, wait)
 }
 function sendAction(action: string) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
@@ -90,6 +104,8 @@ function sendAction(action: string) {
   } else {
     ws.send(JSON.stringify({ action }))
   }
+  if (action === "lock_curve") showToast("曲线已锁定")
+  if (action === "unlock_curve") showToast("曲线已解锁")
   if (action === "reset_hud") showToast("HUD 已重置")
   if (action === "reset_curve") showToast("曲线已重置")
   if (action === "reset_all") showToast("全部曲线已重置")

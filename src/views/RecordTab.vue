@@ -1,14 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue"
+import { ref, onMounted, onUnmounted } from "vue"
 
 defineProps<{ telemetry: any }>()
 const emit = defineEmits<{ action: [action: string] }>()
 
 const localFiles = ref<any[]>([])
 function refreshFiles() { emit('action', 'list_recordings') }
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+const onRecFiles = (e: Event) => { localFiles.value = (e as CustomEvent).detail || [] }
 onMounted(() => {
-  refreshFiles(); setInterval(refreshFiles, 5000)
-  window.addEventListener('rec-files', ((e: CustomEvent) => { localFiles.value = e.detail || [] }) as EventListener)
+  refreshFiles(); refreshTimer = setInterval(refreshFiles, 5000)
+  window.addEventListener('rec-files', onRecFiles)
+})
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  window.removeEventListener('rec-files', onRecFiles)
 })
 
 const delay = ref(3)

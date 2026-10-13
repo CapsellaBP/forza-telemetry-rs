@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, watch, nextTick } from "vue"
+import { computed, ref, onMounted, onUnmounted, watch, nextTick } from "vue"
 import HudPreview from "../components/HudPreview.vue"
 import ThrottleBrakeScope from "../components/ThrottleBrakeScope.vue"
+import { usePressGestures } from "../composables/usePressGestures"
 
 const props = defineProps<{ telemetry: any }>()
 const emit = defineEmits<{ action: [action: string] }>()
@@ -22,6 +23,47 @@ const statusColor = computed(() => {
 function toggleLock() {
   emit('action', isLocked.value ? 'unlock_curve' : 'lock_curve')
 }
+const { pressing, onPointerdown, onPointerup, onPointercancel, onDblclick } = usePressGestures({
+  onLongPress: toggleLock,
+  onDoubleClick: () => emit('action', 'reset_curve'),
+})
+
+// 总览页设计稿 1162×762: 窗口小于设计稿时 zoom 等比缩小 (比例不动);
+// 大于设计稿时 zoom 锁 ZOOM_MAX, 余量由 dashWidth/dashHeight 浮动吸收, 居中显示
+const ZOOM_MIN = 0.7, ZOOM_MAX = 1.0, BASE_W = 1162, BASE_H = 762, MAX_W = 1280
+const MAX_H = 810        // 高度浮动上限: 两个行间垂直间距 10 → 最多各 +24
+const ROW_GAP_FL = 0.12  // 行内左右间距浮动系数: 每像素宽度余量中间距分 0.12
+const viewport = ref<HTMLElement | null>(null)
+const dashZoom = ref(1)
+const dashWidth = ref(BASE_W)
+const dashHeight = ref(BASE_H)
+const gapX = ref(0)  // --hfl: 行内间距浮动量 (行1/行2)
+const gapY = ref(0)  // --vfl: 行间垂直间距浮动量
+let ro: ResizeObserver | null = null
+onMounted(() => {
+  const el = viewport.value; if (!el) return
+  const update = () => {
+    if (!el.clientWidth) return   // v-show 隐藏时保持上次缩放值
+    // 2px safety: sizing content exactly equal to the viewport is metastable —
+    // zoom sub-pixel rounding can flip overflow on/off, toggling the scrollbar
+    // (~17px layout shift) every frame = whole-panel double-image flicker.
+    const cw = el.clientWidth - 2, ch = el.clientHeight - 2
+    const z = Math.max(ZOOM_MIN, Math.min(cw / BASE_W, ch / BASE_H, ZOOM_MAX))
+    dashZoom.value = z
+    if (z >= ZOOM_MAX) {
+      dashWidth.value = Math.min(MAX_W, cw / z)
+      dashHeight.value = Math.min(MAX_H, ch / z)
+      gapX.value = (dashWidth.value - BASE_W) * ROW_GAP_FL
+      gapY.value = (dashHeight.value - BASE_H) / 2   // 两个行间距平分
+    } else {
+      dashWidth.value = BASE_W; dashHeight.value = BASE_H; gapX.value = 0; gapY.value = 0
+    }
+  }
+  ro = new ResizeObserver(update)
+  ro.observe(el)
+  update()
+})
+onUnmounted(() => ro?.disconnect())
 
 const throttle = computed(() => (props.telemetry?.throttle ?? 0) * 100)
 const brake = computed(() => (props.telemetry?.brake ?? 0) * 100)
@@ -61,11 +103,15 @@ const SZ = 250
 function drawGG() {
   const c = ggCanvas.value; if (!c) return
   const dpr = window.devicePixelRatio || 1
-  const bw = Math.round(SZ * dpr)
-  if (c.width !== bw || c.height !== bw) { c.width = bw; c.height = bw }
   c.style.width = SZ + "px"; c.style.height = SZ + "px"
+  // 位图尺寸走 getBoundingClientRect: 含 CSS zoom (总览页等比缩放器), SZ 固定值不含
+  const rect = c.getBoundingClientRect()
+  if (rect.width === 0) return
+  const bw = Math.round(rect.width * dpr)
+  if (c.width !== bw || c.height !== bw) { c.width = bw; c.height = bw }
   const ctx = c.getContext("2d")!
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  const eff = rect.width / SZ * dpr
+  ctx.setTransform(eff, 0, 0, eff, 0, 0)
   const cx = SZ / 2, cy = SZ / 2, r = SZ / 2 - 32
 
   ctx.clearRect(0, 0, SZ, SZ)
@@ -129,10 +175,14 @@ function drawPower() {
   const c = pwCanvas.value; if (!c) return
   const dpr = window.devicePixelRatio || 1
   const w = c.clientWidth, h = c.clientHeight
-  const bw = Math.round(w * dpr), bh = Math.round(h * dpr)
+  if (w === 0 || h === 0) return
+  // 位图尺寸走 getBoundingClientRect: 含 CSS zoom (总览页等比缩放器), clientWidth 不含
+  const rect = c.getBoundingClientRect()
+  const eff = rect.width / w * dpr
+  const bw = Math.round(rect.width * dpr), bh = Math.round(rect.height * dpr)
   if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh }
   const ctx = c.getContext("2d")!
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.setTransform(eff, 0, 0, eff, 0, 0)
   ctx.fillStyle = "#121314"; ctx.fillRect(0, 0, w, h)
   const pad = { t: 8, r: 55, b: 18, l: 32 }, pw = w - pad.l - pad.r, ph = h - pad.t - pad.b
   const curve = props.telemetry?.curve
@@ -178,10 +228,13 @@ function drawPower() {
 // traversal of the whole telemetry object (settings/curves) at 60Hz
 watch(() => props.telemetry?.pkt_count, () => { if (!pwCanvas.value?.clientWidth) return; nextTick(drawPower) })
 onMounted(() => nextTick(drawPower))
+// zoom 变化后 canvas 位图尺寸需立即跟进, 否则等下一帧数据期间发虚
+watch(dashZoom, () => nextTick(() => { drawPower(); drawGG() }))
 </script>
 
 <template>
-  <div class="dashboard">
+  <div class="dash-viewport" ref="viewport">
+  <div class="dashboard" :style="{ zoom: dashZoom, width: dashWidth + 'px', height: dashHeight + 'px', '--hfl': gapX + 'px', '--vfl': gapY + 'px' }">
     <!-- Row 1: scope | label/brake/throttle/label | buttons | HUD -->
     <div class="top-row">
       <div class="scope-col"><ThrottleBrakeScope :telemetry="telemetry" /></div>
@@ -205,7 +258,9 @@ onMounted(() => nextTick(drawPower))
 
     <!-- Row 2: Power + Car info -->
     <div class="mid-row">
-      <div class="pw-card card" :class="{ 'card-locked': isLocked }" @dblclick="toggleLock" title="双击切换锁定"><div class="card-label">功率 / 扭矩</div><canvas ref="pwCanvas" class="pw-canvas"></canvas></div>
+      <div class="pw-card card curve-card" :class="{ 'card-locked': isLocked, pressing }"
+        @pointerdown="onPointerdown" @pointerup="onPointerup" @pointercancel="onPointercancel"
+        @dblclick="onDblclick" title="双击重置此车曲线 · 长按切换锁定"><div class="card-label">功率 / 扭矩</div><canvas ref="pwCanvas" class="pw-canvas"></canvas></div>
       <div class="info-card card">
         <div class="card-label">车况</div>
         <div class="info-top">
@@ -218,7 +273,7 @@ onMounted(() => nextTick(drawPower))
         </div>
         <div class="info-bot">
           <div class="ir status-row"><span>曲线</span><span :style="{ color: statusColor, fontWeight: 600 }">{{ statusText }}</span></div>
-          <div class="stab-row"><span class="stab-lbl">增压稳定值</span><span class="stab-val">{{ telemetry?.curve?.stable_value_set ? (telemetry.curve.stable_value as number).toFixed(1) + ' psi' : '-' }}</span></div>
+          <div class="stab-row"><span class="stab-lbl">当前转速增压基准</span><span class="stab-val">{{ telemetry?.curve?.boost_ref != null ? (telemetry.curve.boost_ref as number).toFixed(1) + ' psi' : '-' }}</span></div>
           <div class="lock-row"><button class="btn-lock-dash" :class="{ on: isLocked }" @click="toggleLock">{{ isLocked ? '已锁定' : '未锁定' }}</button></div>
         </div>
       </div>
@@ -284,26 +339,36 @@ onMounted(() => nextTick(drawPower))
       </div>
     </div>
   </div>
+  </div>
 </template>
 
 <style scoped>
-.dashboard { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+/* 缩放视口: 内容按设计稿尺寸钉死, 由 dashZoom 等比缩放并居中 (margin:auto 在溢出时回退为起点对齐) */
+.dash-viewport { height: 100%; overflow: auto; display: grid; }
+.dashboard { width: 1162px; height: 762px; margin: auto; padding: 16px; display: flex; flex-direction: column; gap: calc(10px + var(--vfl, 0px)); }
 
 /* ── 布局备忘 / Layout notes (hand-tuned, don't change blindly) ──
    行2/3 最大总宽 = 1130 (功率1010+车况110+间距10; 胎温260+G力290+悬挂290+滑移260+间距30)
    行1: 示波器+油门柱(152)+预览 = 功率最大宽1010 → 示波器/预览同步 = (1010-152-20)/2 = 419
    按钮列 110 宽 = 车况卡宽(上下竖线对齐), 高 32*3+4*2 = 104
    手k旋钮: scope/hud min/max-width(160/419), 按钮 margin-top(下沉), 字号13/R角7
-   预览高110固定(HudPreview.vue), 示波器绘制见 ThrottleBrakeScope.vue */
+   预览高110固定(HudPreview.vue), 示波器绘制见 ThrottleBrakeScope.vue
+   固定尺寸是刻意的: 框定胎温/滑移表针与悬挂胶囊的比例美观 + 悬挂前后高低差姿态 — 
+   要适配窗口请用 dash-viewport 的 zoom 等比缩放, 不要弹性化单个组件
+   浮动间距: zoom 只缩不放 (0.7~1.0, 旋钮 ZOOM_MIN/MAX; 低于 0.7 出滚动条——更小没有参考价值); 窗宽 >1162 时 dashWidth 浮动至
+   MAX_W 1280, 余量分摊: 行1/2 行内间距 (calc +var(--hfl), 系数 ROW_GAP_FL) + 示波器/预览/
+   功率曲线 (flex 吸收剩余) + 行3盒间距 (space-between); 窗高 >762 时 dashHeight 浮动至
+   MAX_H 810, 余量全部给两个行间垂直间距 (calc +var(--vfl), 各行高度不动);
+   四盒/车况卡/按钮列固定像素不动 */
 
 /* ── Row 1 ── */
-.top-row { display: flex; gap: 10px; align-items: center; }
+.top-row { display: flex; gap: calc(10px + var(--hfl, 0px)); align-items: center; }
 .scope-col {
-  flex: 1; min-width: 160px; max-width: 419px; height: 110px;
+  flex: 1; min-width: 160px; height: 110px;
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--card); overflow: hidden;
 }
-.hud-col { flex: 1; min-width: 160px; max-width: 419px; }
+.hud-col { flex: 1; min-width: 160px; }
 .hud-col > * { width: 100%; }
 
 .tb-col { display: flex; gap: 6px; flex-shrink: 0; height: 110px; align-items: stretch; }
@@ -328,10 +393,10 @@ onMounted(() => nextTick(drawPower))
 .btn.edit-on { border: 2px dashed rgba(255,204,0,0.55); color: #ffcc00; }
 
 /* ── Row 2 ── */
-.mid-row { display: flex; gap: 10px; height: 300px; }
+.mid-row { display: flex; gap: calc(10px + var(--hfl, 0px)); height: 300px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; }
 .card-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; flex-shrink: 0; }
-.pw-card { flex: 1; min-width: 200px; max-width:1010px; }
+.pw-card { flex: 1; min-width: 200px; }
 .pw-canvas { flex: 1; width: 100%; min-height: 0; }
 .info-card { width: 110px; flex-shrink: 0; align-items: center; text-align: center; }
 .info-top { align-self: stretch; text-align: left; }
@@ -341,7 +406,7 @@ onMounted(() => nextTick(drawPower))
 .in { color: var(--text); font-weight: 600; }
 
 /* ── Row 3 ── */
-.quad-row { display: flex; gap: 10px; align-items: stretch; height: 300px; }
+.quad-row { display: flex; gap: 10px; align-items: stretch; height: 300px; justify-content: space-between; }
 .tire-box { width:260px; flex-shrink: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; }
 .tire-inner { flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .t-row { display: flex; gap: 4px; flex: 1; }
@@ -368,6 +433,13 @@ onMounted(() => nextTick(drawPower))
 .susp-bar { width: 100%; border-radius: 0; transition: height 0.2s; min-height: 0; }
 
 .card-locked { border-color: var(--accent); }
+.curve-card { position: relative; overflow: hidden; user-select: none; cursor: pointer; }
+/* 长按进度条：与 usePressGestures 默认 duration (500ms) 同步 */
+.curve-card::after {
+  content: ""; position: absolute; left: 0; bottom: 0; height: 3px; width: 0;
+  background: var(--accent);
+}
+.curve-card.pressing::after { width: 100%; transition: width 0.5s linear; }
 /* Divider spans the full card width (into the 10px card padding), text stays aligned */
 .status-row {
   align-self: stretch;

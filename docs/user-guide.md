@@ -61,11 +61,12 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 - 点击"启动 HUD"打开透明浮层窗口
 - 浮层显示：档位、时速、RPM 条、换挡线（蓝）、最大转速线（红）、功率带（白）
 - 背景罩：HUD 区域圆角柔光板，浓度与圆角半径可调（HUD 页"外观"），0=关闭；文字带兜底阴影；换挡线/爆闪光晕强度可调，并随场景亮度自动缩放（白天收小、夜晚放开）
-- 闪烁提示：达到换挡点时档位和 RPM 条闪烁蓝光；接近最大转速时闪烁红光（提前量可调）
+- 闪烁提示：到达最大功率后档位和 RPM 条闪烁蓝光；接近最大转速时闪烁红光（提前量可调）
 - 滑移条：RPM 条下方常显四轮最大滑移率（白 <0.5 / 黄 0.5-2.0 / 红 >2.0 正在打滑）；起步低速阶段自动放宽判定，可在 HUD 页关闭
 - G 力浮动：加速/刹车/过弯时浮层整体漂移
 - 编辑模式：点击"激活 HUD"可拖动窗口、调整大小，黄色虚线框表示编辑中
-- 停车自动隐藏，起步恢复显示
+- 停车自动隐藏，起步恢复显示；遥测数据停止约 1 秒后同样自动隐藏（如回放结束、游戏停止发包），数据恢复后重新显示
+- 入场特效：打开 HUD 窗口时播放一次并停留约 2.6 秒（确认 HUD 正常工作）；行驶中默认仅换车后第一次起步播放（两道光刃从中间向两侧划开 → 元素分组飞入 → 遮光罩边缘闪亮），HUD 页可改为每次起步都播放
 - 点击"停止 HUD"关闭浮层，位置自动保存
 
 ### 渲染模式
@@ -79,8 +80,8 @@ Forza Telemetry RS 是实时遥测工具，支持 Forza Horizon 6 与《Forza Mo
 - 自动检测最大转速（即断油时的转速）
 - 自动识别电动车（隐藏换挡线/最大转速线；Motorsport 禁用）
 - 换车时自动保存旧车曲线、加载新车曲线
-- 可锁定曲线防止继续采样（双击功率图 / 按钮 / 总览车况卡片）
-- 增压稳定采样：仅涡轮车有效，增压稳定后才采，避免爬升段低质量数据。动力页可调参数
+- 长按功率图（或按钮 / 总览车况卡片）锁定曲线防止继续采样；双击功率图重置此车曲线
+- 增压稳定采样：针对增压车，按转速分段学习全油门增压基准，压力接近当前转速的基准才采样，避免增压爬升段与牵引力干预期间的低质量数据。涡轮与离心式机械增压均适用。动力页可调参数
 
 ### 录制与回放
 
@@ -165,11 +166,12 @@ The left sidebar has 8 tabs:
 - Click "Start HUD" to open the transparent overlay window
 - Displays: gear, speed, RPM bar, shift line (blue), max RPM line (red), power band (white)
 - Backdrop: rounded soft plate behind HUD content with adjustable opacity and corner radius (HUD tab → Appearance); 0 = off. Text carries a fallback shadow; marker/strobe glow intensity adjustable and auto-scaled by ambient scene brightness (retracts in daylight, opens in the dark)
-- Strobe flash: gear and RPM bar flash blue at the shift point, and flash red when approaching max RPM (adjustable lead)
+- Strobe flash: gear and RPM bar flash blue after reaching peak power, and flash red when approaching max RPM (adjustable lead)
 - Slip bar: always-on max |slip ratio| across all four wheels under the RPM bar (white <0.5 / yellow 0.5-2.0 / red >2.0 = spinning or locking); thresholds relax automatically at crawl speed (launch dig); can be disabled on the HUD tab
 - G-force float: overlay drifts with acceleration/braking/cornering
 - Edit mode: click "Activate HUD" to drag and resize the window (yellow dashed border)
-- Auto-hides when parked, reappears when moving
+- Auto-hides when parked, reappears when moving; also hides ~1s after telemetry data stops (e.g. playback ended, game stopped sending) and returns when data resumes
+- Entrance effect: plays once with a ~2.6s linger when the HUD window opens (confirms the HUD is alive); while driving it plays on the first launch after a car change by default (two light blades split outward from center, elements fly in, plate rim flashes) — the HUD tab can switch it to play on every launch
 - Click "Stop HUD" to close — position is saved automatically
 
 ### Render Mode
@@ -183,8 +185,8 @@ The Settings tab offers three render modes: Auto / Software / Hardware. Switchin
 - Auto-detects max RPM (the RPM at fuel cut)
 - Auto-detects electric vehicles (hides shift/max-RPM lines; disabled for Motorsport)
 - Saves curve on car change, loads saved curve on return
-- Lock curve to prevent further sampling (double-click power chart / button / dashboard info card)
-- Boost stable sampling: turbo cars only, waits for boost to stabilize before sampling. Parameters on Power page
+- Long-press the power chart (or the button / dashboard info card) to lock the curve against further sampling; double-click the power chart to reset the current car's curve
+- Boost stable sampling: for boosted cars, learns a full-throttle boost reference per RPM range and samples only when boost is near the reference for the current RPM, rejecting low-quality data from boost spool-up and traction-control intervention. Works for both turbo and centrifugal supercharger. Parameters on Power page
 
 ### Recording & Playback
 

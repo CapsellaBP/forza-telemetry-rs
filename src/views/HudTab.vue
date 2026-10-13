@@ -69,7 +69,10 @@ const brake = computed(() => (props.telemetry?.brake ?? 0) * 100)
         <div class="row"><label>色相 <InfoTip>RPM条色相偏移。0=默认暖色渐变，±180调色调</InfoTip></label><input type="range" min="-180" max="180" :value="s('rpm_bar_hue',0)" @input="emit('set','rpm_bar_hue',intVal($event))"><span class="val">{{ s('rpm_bar_hue',0) }}°</span></div>
         <div class="row"><label>总长</label><input type="range" min="100" max="500" :value="s('rpm_bar_width',260)" @input="emit('set','rpm_bar_width',intVal($event))"><span class="val">{{ s('rpm_bar_width',260) }}px</span></div>
         <label class="toggle"><input type="checkbox" :checked="s('slip_bar',true)" @change="emit('set','slip_bar',checked($event))"> 滑移条 <InfoTip>常显四轮最大滑移率。白&lt;0.5 正常，黄 0.5-2.0 接近极限，红&gt;2.0 打滑；起步低速阶段自动放宽</InfoTip></label>
-        <div class="color-bar">白→<span style="color:#ffdd00">黄</span>→<span style="color:#ff8800">橙</span>→<span style="color:#ff3300">红</span>(至蓝线)→<span style="color:#3399ff">蓝(换挡闪)</span>→<span style="color:#ff3333">红闪(近最大转速)</span></div>
+        <div class="rpm-scale">
+          <div class="rpm-scale-bar"></div>
+          <div class="rpm-scale-note">颜色向换挡蓝线渐变走完 → 蓝闪 = 到达最大功率 → 红闪 = 临近最大转速</div>
+        </div>
       </section>
 
       <section class="card">
@@ -87,6 +90,7 @@ const brake = computed(() => (props.telemetry?.brake ?? 0) * 100)
         <div class="row"><label>圆角半径 <InfoTip>背景罩四角的圆角半径 (px)，角部曲率连续过渡。0=直角</InfoTip></label><input type="range" min="0" max="120" step="2" :value="s('hud_backdrop_radius',100)" @input="emit('set','hud_backdrop_radius',intVal($event))"><span class="val">{{ s('hud_backdrop_radius',100) }}px</span></div>
         <div class="row"><label>角部平滑 <InfoTip>圆角的曲率过渡比例。0%=纯圆弧最饱满，100%=最大平滑衔接，中间为回旋线+圆弧混合</InfoTip></label><input type="range" min="0" max="100" :value="(s('hud_backdrop_smooth',0.5))*100" @input="emit('set','hud_backdrop_smooth',slider($event,100))"><span class="val">{{ ((s('hud_backdrop_smooth',0.5))*100).toFixed(0) }}%</span></div>
         <div class="row"><label>光晕强度 <InfoTip>换挡线/最大转速线/RPM条端点/爆闪的光晕强度。夜晚可调低减少光斑。0=关闭</InfoTip></label><input type="range" min="0" max="100" :value="(s('hud_glow',1.0))*100" @input="emit('set','hud_glow',slider($event,100))"><span class="val">{{ ((s('hud_glow',1.0))*100).toFixed(0) }}%</span></div>
+        <div class="row"><label class="toggle"><input type="checkbox" :checked="s('hud_fx_every',false)" @change="emit('set','hud_fx_every',checked($event))"> 每次起步都播放入场特效 <InfoTip>默认仅换车后第一次起步播放；开启后 HUD 每次从隐藏恢复显示（起步）都播放。打开 HUD 窗口时的开机展示不受此开关影响</InfoTip></label></div>
         <div class="row"><label>G力浮动幅度 <InfoTip>整体浮动范围。0=关闭</InfoTip></label><input type="range" min="0" max="10" step="0.5" :value="s('g_float_amplitude',2)" @input="emit('set','g_float_amplitude',Number(($event.target as HTMLInputElement).value))"><span class="val">{{ (s('g_float_amplitude',2)).toFixed(1) }}px</span></div>
         <div class="row"><label>平滑度 <InfoTip>值越小越平滑。0.02=极平滑，0.15=灵敏抖动</InfoTip></label><input type="range" min="2" max="50" :value="(s('g_float_smoothing',0.08))*100" @input="emit('set','g_float_smoothing',slider($event,100))"><span class="val">{{ (s('g_float_smoothing',0.08)).toFixed(2) }}</span></div>
         <div class="row"><label>加速灵敏度 <InfoTip>加速G力方向缩放。加速G通常较小，可放大此值</InfoTip></label><input type="range" min="10" max="200" :value="(s('g_float_accel_scale',0.5))*100" @input="emit('set','g_float_accel_scale',slider($event,100))"><span class="val">{{ (s('g_float_accel_scale',0.5)).toFixed(1) }}x</span></div>
@@ -132,5 +136,12 @@ const brake = computed(() => (props.telemetry?.brake ?? 0) * 100)
 .toggles { display: flex; gap: 12px; margin-top: 4px; }
 .toggle { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .toggle input { accent-color: var(--accent); }
-.color-bar { font-size: 11px; display: flex; gap: 4px; margin-top: 2px; }
+.rpm-scale { margin-top: 8px; }
+.rpm-scale-bar {
+  height: 6px;
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.9) 0 20%, #ffdd00 20% 40%, #ff3300 40% 60%,
+    #3399ff 60% 80%, #ff3333 80% 100%);
+}
+.rpm-scale-note { font-size: 11px; color: var(--dim); margin-top: 5px; }
 </style>

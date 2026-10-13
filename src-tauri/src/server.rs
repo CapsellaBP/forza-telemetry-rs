@@ -39,10 +39,9 @@ fn apply_advisor_settings(a: &mut ShiftAdvisor, settings: &serde_json::Value) {
     a.throttle_min = settings.get("sample_throttle_min").and_then(|v| v.as_f64()).unwrap_or(0.95);
     a.alpha = settings.get("curve_alpha").and_then(|v| v.as_f64()).unwrap_or(0.25);
     a.skip_ms = settings.get("sample_skip_ms").and_then(|v| v.as_u64()).unwrap_or(130) as u32;
-    a.power_drop_limit = settings.get("power_drop_limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
     a.boost_stable_sample = settings.get("boost_stable_sample").and_then(|v| v.as_bool()).unwrap_or(false);
-    a.boost_stable_ms = settings.get("boost_stable_ms").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
     a.boost_stable_tol = settings.get("boost_stable_tol").and_then(|v| v.as_f64()).unwrap_or(0.90);
+    a.boost_margin = settings.get("boost_margin").and_then(|v| v.as_f64()).unwrap_or(0.0);
 }
 
 /// Resolve path: dev mode → CWD-relative (cargo tauri dev sets CWD=src-tauri),
@@ -94,6 +93,10 @@ pub struct State {
     pub settings: serde_json::Value,
     /// "horizon" | "motorsport" — detected from the last packet size
     pub game: String,
+    /// Wall time of the last data packet (live UDP or playback). Drives the
+    /// staleness flag: without it the last frame would broadcast forever after
+    /// the source stops (playback ended, game quit, FM8 menus don't send).
+    pub last_pkt_at: std::time::Instant,
 }
 
 pub struct SharedAdvisor {
@@ -112,9 +115,11 @@ impl Default for State {
     fn default() -> Self {
         Self {
             raw: HashMap::new(), packet_count: 0, game: String::new(),
+            last_pkt_at: std::time::Instant::now(),
             settings: serde_json::json!({
                 "hud_opacity": 0.70, "hud_scale": 2.0,
                 "hud_backdrop": 0.30, "hud_glow": 1.0, "hud_backdrop_radius": 100, "hud_backdrop_smooth": 0.5,
+                "hud_fx_every": false,
                 "red_flash_pct": 0.01,
                 "gear_yellow_start": 0.50, "rpm_bar_brightness": 1.0, "rpm_bar_hue": 0,
                 "power_band_pct": 0.93, "power_band_opacity": 0.5,
@@ -127,7 +132,7 @@ impl Default for State {
                 "marker_ema_alpha": 0.06,
                 "g_total_ema_alpha": 0.05,
                 "rpm_bar_width": 260,
-                "boost_stable_sample": true, "boost_stable_ms": 500, "boost_stable_tol": 0.98,
+                "boost_stable_sample": true, "boost_stable_tol": 0.98, "boost_margin": 0.0,
                 "udp_port": 5300,
                 "render_mode": "software",
 
@@ -135,7 +140,6 @@ impl Default for State {
                 "susp_thr1": 0.30, "susp_thr2": 0.55, "susp_thr3": 0.80,
                 "slip_warn": 0.50, "slip_danger": 2.00, "slip_bar": true,
                 "sample_throttle_min": 0.95, "sample_skip_ms": 130, "curve_alpha": 0.25,
-                "power_drop_limit": 0.0,
                 "ev_detect_frames": 300,
             }),
         }
@@ -152,6 +156,9 @@ struct BroadcastMsg {
     accel_lon: f64, accel_lat: f64,
     car_id: i32, car_perf_index: i32, car_class: i32, drivetrain: i32, cylinders: i32,
     is_race_on: bool, is_ev: bool, hud_visible: bool, pkt_count: u64,
+    /// True when no packet (live or replay) arrived for ~1s while not playing
+    /// back. Gates hud_visible and the panel's "waiting for data" state.
+    data_stale: bool,
     tire_temp: [f64;4], tire_slip: [f64;4], susp_travel: [f64;4], max_slip: f64,
     settings: serde_json::Value,
     shift_advice: serde_json::Value,
@@ -166,7 +173,7 @@ struct BroadcastMsg {
 
 #[inline] fn f_to_c(f: f64) -> f64 { ((f - 32.0) * 5.0 / 9.0 * 10.0).round() / 10.0 }
 
-fn build_broadcast(state: &State, connected: usize, edit_mode: bool, rec_on: bool, rec_pending: bool, play_on: bool, paused: bool, rec_n: u64, error_msg: Option<String>, adv: &SharedAdvisor) -> BroadcastMsg {
+fn build_broadcast(state: &State, connected: usize, edit_mode: bool, rec_on: bool, rec_pending: bool, play_on: bool, paused: bool, rec_n: u64, error_msg: Option<String>, adv: &SharedAdvisor, data_stale: bool) -> BroadcastMsg {
     let r = &state.raw;
     let rpm = r.get("current_engine_rpm").copied().unwrap_or(0.0);
     let rpm_max = r.get("engine_max_rpm").copied().unwrap_or(8000.0);
@@ -179,7 +186,7 @@ fn build_broadcast(state: &State, connected: usize, edit_mode: bool, rec_on: boo
     let mut a = adv.advisor.lock().unwrap();
     let advice = a.advice(rpm, rpm_max, throttle, gear);
     let band_pct = state.settings.get("power_band_pct").and_then(|v| v.as_f64()).unwrap_or(0.93);
-    let curve = a.get_curve(band_pct);
+    let curve = a.get_curve(band_pct, rpm);
     let is_ev = *adv.is_ev.lock().unwrap();
 
     BroadcastMsg {
@@ -199,7 +206,8 @@ fn build_broadcast(state: &State, connected: usize, edit_mode: bool, rec_on: boo
         drivetrain: r.get("drivetrain_type").copied().unwrap_or(0.0) as i32,
         cylinders: r.get("num_cylinders").copied().unwrap_or(0.0) as i32,
         is_race_on: r.get("is_race_on").copied().unwrap_or(0.0) > 0.0,
-        is_ev, hud_visible: speed > 0.5, pkt_count: state.packet_count,
+        is_ev, hud_visible: speed > 0.5 && !data_stale, pkt_count: state.packet_count,
+        data_stale,
         tire_temp: [f_to_c(r.get("tire_temp_fl").copied().unwrap_or(0.0)), f_to_c(r.get("tire_temp_fr").copied().unwrap_or(0.0)), f_to_c(r.get("tire_temp_rl").copied().unwrap_or(0.0)), f_to_c(r.get("tire_temp_rr").copied().unwrap_or(0.0))],
         tire_slip: [(r.get("tire_slip_ratio_fl").copied().unwrap_or(0.0)*1000.0).round()/1000.0, (r.get("tire_slip_ratio_fr").copied().unwrap_or(0.0)*1000.0).round()/1000.0, (r.get("tire_slip_ratio_rl").copied().unwrap_or(0.0)*1000.0).round()/1000.0, (r.get("tire_slip_ratio_rr").copied().unwrap_or(0.0)*1000.0).round()/1000.0],
         susp_travel: [(r.get("susp_travel_fl").copied().unwrap_or(0.0)*1000.0).round()/1000.0, (r.get("susp_travel_fr").copied().unwrap_or(0.0)*1000.0).round()/1000.0, (r.get("susp_travel_rl").copied().unwrap_or(0.0)*1000.0).round()/1000.0, (r.get("susp_travel_rr").copied().unwrap_or(0.0)*1000.0).round()/1000.0],
@@ -399,10 +407,9 @@ async fn run(
                             (s.settings.get("sample_throttle_min").and_then(|v| v.as_f64()).unwrap_or(0.95),
                              s.settings.get("curve_alpha").and_then(|v| v.as_f64()).unwrap_or(0.25),
                              s.settings.get("sample_skip_ms").and_then(|v| v.as_u64()).unwrap_or(130) as u32,
-                             s.settings.get("power_drop_limit").and_then(|v| v.as_f64()).unwrap_or(0.0),
                              s.settings.get("boost_stable_sample").and_then(|v| v.as_bool()).unwrap_or(false),
-                             s.settings.get("boost_stable_ms").and_then(|v| v.as_u64()).unwrap_or(500) as u32,
-                             s.settings.get("boost_stable_tol").and_then(|v| v.as_f64()).unwrap_or(0.90))
+                             s.settings.get("boost_stable_tol").and_then(|v| v.as_f64()).unwrap_or(0.90),
+                             s.settings.get("boost_margin").and_then(|v| v.as_f64()).unwrap_or(0.0))
                         };
                         {
                             let mut last_id = udp_adv.last_car_id.lock().unwrap();
@@ -413,10 +420,10 @@ async fn run(
                                     if let Some(saved) = curves.get(&car_id) {
                                         *a = ShiftAdvisor::from_dict(saved);
                                         a.throttle_min = cur_settings.0; a.alpha = cur_settings.1;
-                                        a.skip_ms = cur_settings.2; a.power_drop_limit = cur_settings.3;
-                                        a.boost_stable_sample = cur_settings.4;
-                                        a.boost_stable_ms = cur_settings.5;
-                                        a.boost_stable_tol = cur_settings.6;
+                                        a.skip_ms = cur_settings.2;
+                                        a.boost_stable_sample = cur_settings.3;
+                                        a.boost_stable_tol = cur_settings.4;
+                                        a.boost_margin = cur_settings.5;
                                     }
                                     drop(a);
                                 }
@@ -440,10 +447,9 @@ async fn run(
                                 a.throttle_min = cur_settings.0;
                                 a.alpha = cur_settings.1;
                                 a.skip_ms = cur_settings.2;
-                                a.power_drop_limit = cur_settings.3;
-                                a.boost_stable_sample = cur_settings.4;
-                                a.boost_stable_ms = cur_settings.5;
-                                a.boost_stable_tol = cur_settings.6;
+                                a.boost_stable_sample = cur_settings.3;
+                                a.boost_stable_tol = cur_settings.4;
+                                a.boost_margin = cur_settings.5;
                                 drop(a);
                                 drop(curves);
                                 *udp_adv.gears_seen.lock().unwrap() = Vec::new();
@@ -457,10 +463,10 @@ async fn run(
                         // them before — boost_stable_sample etc. stayed at defaults forever.
                         if let Ok(mut a) = udp_adv.advisor.lock() {
                             a.throttle_min = cur_settings.0; a.alpha = cur_settings.1;
-                            a.skip_ms = cur_settings.2; a.power_drop_limit = cur_settings.3;
-                            a.boost_stable_sample = cur_settings.4;
-                            a.boost_stable_ms = cur_settings.5;
-                            a.boost_stable_tol = cur_settings.6;
+                            a.skip_ms = cur_settings.2;
+                            a.boost_stable_sample = cur_settings.3;
+                            a.boost_stable_tol = cur_settings.4;
+                            a.boost_margin = cur_settings.5;
                         }
 
                         // Feed shift advisor
@@ -499,6 +505,7 @@ async fn run(
                         let mut s = udp_state.write().await;
                         s.raw = pkt;
                         s.packet_count += 1;
+                        s.last_pkt_at = std::time::Instant::now();
                         let prev_game = s.game.clone();
                         s.game = if n == 331 { "motorsport".into() } else { "horizon".into() };
                         // Render mode auto arbitration: only on live packets, only
@@ -609,14 +616,11 @@ async fn run(
                                                             Err(e) => eprintln!("[FT] Failed to save settings: {e}"),
                                                         }
                                                         // Sync to advisor
-                                                        if let Some(v) = payload.get("power_drop_limit").and_then(|v| v.as_f64()) {
-                                                            if let Ok(mut a) = adv2.advisor.lock() { a.power_drop_limit = v; }
-                                                        }
                                                         if let Some(v) = payload.get("boost_stable_sample").and_then(|v| v.as_bool()) {
                                                             if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_sample = v; }
                                                         }
-                                                        if let Some(v) = payload.get("boost_stable_ms").and_then(|v| v.as_u64()) {
-                                                            if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_ms = v as u32; }
+                                                        if let Some(v) = payload.get("boost_margin").and_then(|v| v.as_f64()) {
+                                                            if let Ok(mut a) = adv2.advisor.lock() { a.boost_margin = v; }
                                                         }
                                                         if let Some(v) = payload.get("boost_stable_tol").and_then(|v| v.as_f64()) {
                                                             if let Ok(mut a) = adv2.advisor.lock() { a.boost_stable_tol = v; }
@@ -837,6 +841,7 @@ async fn run(
                 let mut s = state.write().await;
                 s.raw = pkt.clone();
                 s.packet_count += 1;
+                s.last_pkt_at = std::time::Instant::now();
                 s.game = if pb_buf[pb_i].len() == 331 { "motorsport".into() } else { "horizon".into() };
                 if let Ok(mut a) = adv.advisor.lock() {
                     a.idle_rpm = idle.max(500.0);
@@ -872,6 +877,11 @@ async fn run(
 
         let pb_playing = !pb_buf.is_empty();
         let st = state.read().await;
+        // Stale when the source has been silent ~1s. Suppressed during
+        // playback (incl. paused) — a paused replay is meant to sit on one
+        // frame, and recordings can contain multi-second gaps (FM8 countdown).
+        let data_stale = !pb_playing
+            && st.last_pkt_at.elapsed() >= std::time::Duration::from_secs(1);
         let mut cl = clients.write().await;
         cl.retain(|c| !c.is_closed());
         let _pb_n = *pb_idx2.lock().unwrap();
@@ -886,6 +896,7 @@ async fn run(
             *rec_count.lock().unwrap(),
             error_msg,
             &adv,
+            data_stale,
         );
         if let Ok(mut json) = serde_json::to_string(&msg) {
             if pb_t > 0 && pb_i > 0 {

@@ -58,6 +58,8 @@ python tools/capture_raw.py 10   # 抓真实数据 (10 秒)
 3. 前端 `onmessage` → `telemetry` ref → 组件响应式更新
 4. 用户调滑块 → `{"action":"set_setting","payload":{...}}` → 更新 `State.settings` → 下次广播生效 → 写 `hud-settings.json`
 
+数据停滞检测：实时包与回放包都会刷新 `State.last_pkt_at`；广播时若距最后数据包 ≥1 秒且不在回放中（回放暂停不算），广播置 `data_stale: true` 并强制 `hud_visible = false`——防止数据源消失后（回放结束、游戏退出、Motorsport 进菜单停止发包）界面定格在最后一帧。前端状态点据 `data_stale` 显示"数据停滞，等待恢复"。
+
 ### WS 客户端管理（防内存泄漏）
 
 - 每连接使用**有界队列**（容量 4）+ `try_send`：慢/死客户端丢帧而非无限积压
@@ -87,7 +89,7 @@ python tools/capture_raw.py 10   # 抓真实数据 (10 秒)
 | `lib.rs` | Tauri 命令、HUD 窗口、录制/回放、HUD 配置持久化 |
 | `server.rs` | UDP 监听、WebSocket 广播、设置管理、回放推进、EV 检测 |
 | `telemetry.rs` | FH 324B / Motorsport 331B Sled+Dash 解析（按包长分派）+ detect_pkt_size + 测试 |
-| `shift.rs` | 换挡引擎：EMA 采样、峰值检测、最大转速识别、增压稳定过滤 |
+| `shift.rs` | 换挡引擎：EMA 采样、峰值检测、最大转速识别、增压基准过滤（按转速分段学习） |
 
 ### 录制/回放命令
 

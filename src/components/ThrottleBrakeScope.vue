@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from "vue"
+import { ref, watch, nextTick, onUnmounted } from "vue"
 
 const props = defineProps<{ telemetry: any }>()
 
@@ -8,6 +8,11 @@ const brake = () => props.telemetry?.brake ?? 0
 
 const maxFrames = 300
 const cv = ref<HTMLCanvasElement | null>(null)
+
+// zoom 缩放只改视觉尺寸不改布局尺寸, ResizeObserver 观察不到 — 用窗口 resize 兜底重绘
+const onResize = () => { if (cv.value?.clientWidth) draw() }
+window.addEventListener("resize", onResize)
+onUnmounted(() => window.removeEventListener("resize", onResize))
 
 // Rolling buffer, drawn on data arrival — no scroll state machine. The only
 // state is the buffer itself, so there is nothing left to drift.
@@ -31,12 +36,16 @@ function draw() {
   const dpr = window.devicePixelRatio || 1
   const w = c.clientWidth, h = c.clientHeight
   if (w === 0 || h === 0) return
+  // Bitmap sizing via getBoundingClientRect: it includes CSS zoom (dashboard
+  // proportional scaler) while clientWidth does not — otherwise blurry zoom.
+  const rect = c.getBoundingClientRect()
+  const eff = rect.width / w * dpr
   // Resize only when needed — assigning width/height reallocates the backing
   // store, wasted work at 60fps
-  const bw = Math.round(w * dpr), bh = Math.round(h * dpr)
+  const bw = Math.round(rect.width * dpr), bh = Math.round(rect.height * dpr)
   if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh }
   const ctx = c.getContext("2d")!
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.setTransform(eff, 0, 0, eff, 0, 0)
   ctx.fillStyle = "#121314"; ctx.fillRect(0, 0, w, h)
 
   // Top/bottom padding keeps lines out of the card's 8px rounded corners

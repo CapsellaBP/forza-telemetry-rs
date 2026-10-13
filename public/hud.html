@@ -31,6 +31,7 @@
   #hud {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     height: 100%; opacity: var(--hud-vis); transition: opacity 0.5s;
+    position: relative; /* paints above #fx-beams (DOM order) — beams pass under content */
   }
   /* zoom scales layout WITHOUT creating a stacking context (unlike transform),
      so glow elements can additively blend (plus-lighter) with the backdrop
@@ -118,10 +119,69 @@
     0% { background: linear-gradient(to right,#ff330044,#ff3300); box-shadow: 0 0 calc(12px*var(--glow)) calc(3px*var(--glow)) rgba(255,51,0,calc(0.7*var(--glow))); }
     100% { background: linear-gradient(to right,#ffffff88,#fff); box-shadow: 0 0 calc(16px*var(--glow)) calc(5px*var(--glow)) rgba(255,200,180,calc(0.8*var(--glow))); }
   }
+
+  /* ── Ignition FX (one-shot per car) ── two light beams sweep from center to
+     the plate rim (the "unrolling scroll" cue — the dark plate's scaleX alone
+     is invisible against the dark plate), groups fly in staggered, then the
+     plate rim lights up once. Cheap properties only (opacity/transform/
+     clip-path) — WARP-safe; beams use plus-lighter so they add light onto
+     the plate instead of dulling it. Fill "backwards" so nothing persists
+     after the choreography; body.fx kills the 0.5s container fade so it
+     doesn't fight the entrance. */
+  /* Rim flash: canvas-painted ring (paintBackdrop) stroking the EXACT plate
+     contour — a CSS border-radius ring is a plain circular arc and floated
+     off the clothoid plate corners at the diagonals. CSS here only sizes the
+     canvas; the flash itself is the opacity pulse (fx-rim keyframes below). */
+  #fx-rim {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    opacity: 0; pointer-events: none; z-index: 2;
+  }
+  /* Beams: 2px sharp white blades with a tight glow — a slit of light
+     splitting the plate open, not a soft pole. Motion is WAAPI-driven
+     (fireBeams): keyframes are baked per fire from live window geometry —
+     one continuous decelerating sweep (the old two-segment CSS keyframes
+     restarted the easing at the 60% keyframe, which stopped the blade dead
+     exactly where the shrink began), and the height tracks the plate's
+     painted corner contour: full length over the straight edge, tips riding
+     the curve (2px proud, same as on the straights) through the corner zone
+     down to the rim's straight side segment, handing off into the rim flash.
+     Opacity/transform animate on the beams themselves, never on an ancestor —
+     an ancestor with opacity<1 or transform would create a stacking context
+     and isolate the plus-lighter blend from the backdrop plate. They sit
+     below #hud content (#hud is position:relative, so DOM order paints it
+     above the beams). */
+  #fx-beams { position: fixed; inset: 0; pointer-events: none; }
+  #fx-beams i {
+    position: absolute; top: 10px; bottom: 10px; width: 2px; opacity: 0;
+    background: rgba(255,255,255,0.95);
+    mix-blend-mode: plus-lighter;
+    box-shadow: 0 0 calc(6px*var(--glow)) calc(1px*var(--glow)) rgba(255,255,255,calc(0.9*var(--glow))),
+                0 0 calc(16px*var(--glow)) calc(4px*var(--glow)) rgba(255,255,255,calc(0.35*var(--glow)));
+  }
+  #fx-beams i.l { right: 50%; }
+  #fx-beams i.r { left: 50%; }
+  body.fx #hud { transition: none; }
+  body.fx #backdrop { animation: fx-plate 0.5s cubic-bezier(.18,.75,.25,1) backwards; }
+  @keyframes fx-plate { from { transform: scaleX(0.04); } to { transform: none; } }
+  body.fx #gear { animation: fx-drop 0.4s 0.15s cubic-bezier(.2,.9,.3,1.2) backwards; }
+  @keyframes fx-drop { from { transform: translateY(-16px); opacity: 0; } to { transform: none; opacity: 1; } }
+  body.fx #speed-wrap { animation: fx-rise 0.4s 0.22s cubic-bezier(.2,.9,.3,1.15) backwards; }
+  @keyframes fx-rise { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+  body.fx #rpm-wrap { animation: fx-wipe 0.45s 0.28s cubic-bezier(.3,.7,.3,1) backwards; }
+  @keyframes fx-wipe { from { clip-path: inset(-24px 100% -24px 0); } to { clip-path: inset(-24px 0 -24px 0); } }
+  body.fx #slip-wrap { animation: fx-fade 0.3s 0.50s ease-out backwards; }
+  body.fx #info-row { animation: fx-fade 0.3s 0.58s ease-out backwards; }
+  @keyframes fx-fade { from { opacity: 0; } to { opacity: 1; } }
+  /* Rim flash: fires while the unfold lands (timelines overlap on purpose) —
+     fast attack, sharp decay */
+  body.fx #fx-rim { animation: fx-rim 0.5s 0.35s ease-out backwards; }
+  @keyframes fx-rim { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 </style>
 </head>
 <body>
 <canvas id="backdrop"></canvas>
+<div id="fx-beams"><i class="l"></i><i class="r"></i></div>
+<canvas id="fx-rim"></canvas>
 <div id="hud">
   <div id="hud-inner">
     <div id="top-row">
@@ -219,28 +279,33 @@ function paintBackdrop(){
     return pts;
   }
   const corner=cornerPts();
+  // Stash the corner profile for the FX blade sweep (fireBeams) — local
+  // corner frame: A=(0,0) joint on the top edge, B=(D,D) joint on the side
+  // edge, x monotonic. The blades track THIS painted contour, not an
+  // approximation, so any radius/smoothness setting is followed exactly.
+  window._bkEdge={D:D,pts:corner.map(p=>[p.x,p.y])};
   // Base plate geometric corners (fixed at inset tail; ring d = offset s=tail-d)
   const g=[[w-tail,tail],[w-tail,h-tail],[tail,h-tail],[tail,tail]];
-  function plate(d){
+  function plate(d,c2){
     const x0=d,y0=d,x1=w-d,y1=h-d;
-    ctx.beginPath();
-    if(D<0.5){ctx.rect(x0,y0,x1-x0,y1-y0);return;}
+    c2.beginPath();
+    if(D<0.5){c2.rect(x0,y0,x1-x0,y1-y0);return;}
     const s=tail-d; // ring = base plate offset outward by s along normals
     const P=corner.map(p=>({x:p.x+s*p.sn,y:p.y-s*p.cs}));
     const TR=P.map(p=>[g[0][0]-D+p.x,g[0][1]+p.y]);
     const BR=P.map(p=>[g[1][0]-p.y,g[1][1]-D+p.x]);
     const BL=P.map(p=>[g[2][0]+D-p.x,g[2][1]-p.y]);
     const TL=P.map(p=>[g[3][0]+p.y,g[3][1]+D-p.x]);
-    ctx.moveTo(TL[TL.length-1][0],TL[TL.length-1][1]); // top edge, left joint
-    ctx.lineTo(TR[0][0],TR[0][1]);
-    for(const q of TR)ctx.lineTo(q[0],q[1]);
-    ctx.lineTo(BR[0][0],BR[0][1]);
-    for(const q of BR)ctx.lineTo(q[0],q[1]);
-    ctx.lineTo(BL[0][0],BL[0][1]);
-    for(const q of BL)ctx.lineTo(q[0],q[1]);
-    ctx.lineTo(TL[0][0],TL[0][1]);
-    for(const q of TL)ctx.lineTo(q[0],q[1]);
-    ctx.closePath();
+    c2.moveTo(TL[TL.length-1][0],TL[TL.length-1][1]); // top edge, left joint
+    c2.lineTo(TR[0][0],TR[0][1]);
+    for(const q of TR)c2.lineTo(q[0],q[1]);
+    c2.lineTo(BR[0][0],BR[0][1]);
+    for(const q of BR)c2.lineTo(q[0],q[1]);
+    c2.lineTo(BL[0][0],BL[0][1]);
+    for(const q of BL)c2.lineTo(q[0],q[1]);
+    c2.lineTo(TL[0][0],TL[0][1]);
+    for(const q of TL)c2.lineTo(q[0],q[1]);
+    c2.closePath();
   }
   let prev=0;
   for(let i=0;i<N;i++){
@@ -248,13 +313,13 @@ function paintBackdrop(){
     const target=maxA*Math.exp(-(tail-d)/tau);
     const a=(target-prev)/(1-prev);prev=target;
     if(a<=0.001)continue;
-    plate(d);
+    plate(d,ctx);
     ctx.fillStyle=`rgba(0,0,0,${a.toFixed(4)})`;
     ctx.fill();
   }
   // Glass rim: faint top-down light wash + specular edge highlight
   ctx.save();
-  plate(tail);ctx.clip();
+  plate(tail,ctx);ctx.clip();
   const wash=ctx.createLinearGradient(0,tail,0,h-tail);
   wash.addColorStop(0,"rgba(255,255,255,0.055)");
   wash.addColorStop(0.35,"rgba(255,255,255,0.015)");
@@ -264,11 +329,124 @@ function paintBackdrop(){
   rim.addColorStop(0,"rgba(255,255,255,0.16)");
   rim.addColorStop(1,"rgba(255,255,255,0)");
   ctx.strokeStyle=rim;ctx.lineWidth=1.4;
-  plate(tail);ctx.stroke();
+  plate(tail,ctx);ctx.stroke();
   ctx.restore();
+
+  // FX rim flash ring (#fx-rim canvas; CSS pulses its opacity). Strokes the
+  // EXACT base plate contour — the old CSS border-radius ring was a plain
+  // circular arc and floated off the clothoid plate corners at the diagonals.
+  // Three layers mirror the old CSS look: inner bleed, soft outer glow, and a
+  // crisp core whose width ramps 1px on the long horizontal edges → 3px on
+  // the short vertical sides (uniform width gets shouted down by the long
+  // top/bottom edges on a wide window).
+  const rc=$("fx-rim");
+  rc.width=Math.round(w*dpr);rc.height=Math.round(h*dpr);
+  const r2=rc.getContext("2d");
+  r2.setTransform(dpr,0,0,dpr,0,0);
+  r2.clearRect(0,0,w,h);
+  // inner bleed: clipped to the plate interior, spills inward only
+  r2.save();
+  plate(tail,r2);r2.clip();
+  r2.strokeStyle="rgba(255,255,255,0.18)";r2.lineWidth=12;
+  plate(tail,r2);r2.stroke();
+  r2.restore();
+  // outer glow pass (uniform; the taper lives only in the crisp core)
+  r2.lineJoin="round";
+  r2.shadowColor="rgba(255,255,255,0.5)";r2.shadowBlur=10;
+  r2.strokeStyle="rgba(255,255,255,0.35)";r2.lineWidth=2.5;
+  plate(tail,r2);r2.stroke();
+  r2.shadowBlur=0;
+  // crisp core with tapered width: contour as a point list carrying per-point
+  // width (corner local frame: A=straight-edge joint → B=side joint; widths
+  // ramp 1→3 / 3→1 so they meet the edges flush).
+  const rp=[];
+  const pushC=(map,w0,w1)=>{const n=corner.length;corner.forEach((p,i)=>{const q=map(p);rp.push({x:q[0],y:q[1],w:w0+(w1-w0)*(n>1?i/(n-1):0)});});};
+  if(D<0.5){
+    rp.push({x:tail,y:tail,w:1},{x:w-tail,y:tail,w:1},{x:w-tail,y:tail,w:3},{x:w-tail,y:h-tail,w:3},
+            {x:w-tail,y:h-tail,w:1},{x:tail,y:h-tail,w:1},{x:tail,y:h-tail,w:3},{x:tail,y:tail,w:3},{x:tail,y:tail,w:1});
+  }else{
+    rp.push({x:tail+D,y:tail,w:1},{x:w-tail-D,y:tail,w:1});           // top edge
+    pushC(p=>[g[0][0]-D+p.x,g[0][1]+p.y],1,3);                        // TR: top→side
+    rp.push({x:w-tail,y:tail+D,w:3},{x:w-tail,y:h-tail-D,w:3});       // right edge
+    pushC(p=>[g[1][0]-p.y,g[1][1]-D+p.x],3,1);                        // BR: side→bottom
+    rp.push({x:w-tail-D,y:h-tail,w:1},{x:tail+D,y:h-tail,w:1});       // bottom edge
+    pushC(p=>[g[2][0]+D-p.x,g[2][1]-p.y],1,3);                        // BL: bottom→side
+    rp.push({x:tail,y:h-tail-D,w:3},{x:tail,y:tail+D,w:3});           // left edge
+    pushC(p=>[g[3][0]+p.y,g[3][1]+D-p.x],3,1);                        // TL: side→top
+  }
+  r2.strokeStyle="rgba(255,255,255,0.95)";r2.lineCap="round";
+  for(let i=1;i<rp.length;i++){
+    const a=rp[i-1],b2=rp[i];
+    r2.beginPath();r2.moveTo(a.x,a.y);r2.lineTo(b2.x,b2.y);
+    r2.lineWidth=(a.w+b2.w)/2;
+    r2.stroke();
+  }
 }
 window.addEventListener("resize",paintBackdrop);
 paintBackdrop();
+
+// Blade sweep (fireFx helper). Keyframes are baked per fire — the height
+// profile depends on the painted corner contour, which only exists at
+// runtime, so CSS keyframes can't express it. Baking also fixes the old
+// motion bug: CSS applies its timing function per keyframe segment, so the
+// two-segment keyframes eased to a full stop at the 60% keyframe (exactly
+// where the shrink began) and lurched back up to speed. Here the eased
+// travel is sampled into N linear-interpolated keyframes — the sweep is one
+// continuous deceleration, no easing restarts, no stop.
+// Height: blade stays full length over the straight edge and shrinks only
+// inside the corner zone, tips riding 2px proud of the plate contour (same
+// standoff as on the straights), landing on the rim's straight side segment
+// as the rim flash takes over.
+function fireBeams(){
+  const W=window.innerWidth,H=window.innerHeight;
+  const edge=window._bkEdge,D=edge?edge.D:0,pts=edge?edge.pts:null;
+  // Corner drop cy at local x∈[0,D], linear interpolation over the painted
+  // corner samples (A=(0,0) top-edge joint → B=(D,D) side-edge joint).
+  const cyAt=lx=>{
+    if(!pts||lx<=0)return 0;
+    for(let i=1;i<pts.length;i++){
+      const p0=pts[i-1],p1=pts[i];
+      if(p1[0]>=lx)return p0[1]+(p1[1]-p0[1])*(lx-p0[0])/Math.max(1e-6,p1[0]-p0[0]);
+    }
+    return D;
+  };
+  // Easing sampled into the keyframes: snappy open, gentle (but never
+  // stopped) arrival. Tweak this one tuple to retune the sweep rhythm.
+  const E={x1:0.30,y1:0.65,x2:0.45,y2:0.95};
+  const ease=t=>{
+    let lo=0,hi=1,p=t;
+    for(let i=0;i<20;i++){
+      const q=1-p,x=3*q*q*p*E.x1+3*q*p*p*E.x2+p*p*p;
+      if(Math.abs(x-t)<1e-4)break;
+      if(x<t)lo=p;else hi=p;
+      p=(lo+hi)/2;
+    }
+    const q=1-p;return 3*q*q*p*E.y1+3*q*p*p*E.y2+p*p*p;
+  };
+  const N=40,travel=Math.max(0,W/2-13),HB=Math.max(1,H-20);
+  if(window._fxB)for(const a of window._fxB)a.cancel();
+  window._fxB=[];
+  for(const el of document.querySelectorAll("#fx-beams i")){
+    const dir=el.classList.contains("l")?-1:1;
+    const kf=[];
+    for(let i=0;i<=N;i++){
+      const t=i/N,e=ease(t),u=W/2-travel*e; // u = distance from side edge
+      let s=1;
+      const lx=12+D-u; // corner-local x; >0 once inside the corner zone
+      if(D>0&&lx>0){
+        const hgt=H-2*(12+cyAt(Math.min(lx,D)))+4;
+        s=Math.max(0.05,Math.min(1,hgt/HB));
+      }
+      // Opacity envelope preserved from the CSS version: fast attack, full
+      // brightness through the corner ride, dive only in the last 15% where
+      // the rim flash takes over.
+      const o=t<0.1?t/0.1:t<0.6?1:t<0.85?1-0.1*(t-0.6)/0.25:0.9*(1-(t-0.85)/0.15);
+      kf.push({offset:t,opacity:+o.toFixed(4),
+        transform:`translateX(${(dir*travel*e).toFixed(2)}px) scaleY(${s.toFixed(4)})`});
+    }
+    window._fxB.push(el.animate(kf,{duration:450,easing:"linear"}));
+  }
+}
 // RPM bar brightness/hue: transform gradient stops in HSL space rather than a
 // CSS filter — filter would create a stacking context and isolate the bar cap
 // glow's additive (plus-lighter) blending with the backdrop. Stops come from a
@@ -331,13 +509,42 @@ function connect(){
     if(d.type!=="telemetry")return;
 
     const s=d.settings||{};
+    // Backdrop settings BEFORE the FX block: a radius/smoothness change
+    // repaints the plate and refreshes the corner profile (_bkEdge) that
+    // fireBeams bakes into the blade sweep.
+    if(s.hud_backdrop_radius!==window._bkR||s.hud_backdrop_smooth!==window._bkS){window._bkR=s.hud_backdrop_radius;window._bkS=s.hud_backdrop_smooth;paintBackdrop();}
+
+    // Ignition FX — armed per car change, fires once at the first speed>0
+    // afterwards, then silent until the next car change. car_id 0 is the
+    // blanked identity block (pause/pre-race), NOT a car change — never
+    // touches _fxCar/_fxArm. hud_fx_every additionally arms on every HUD
+    // appearance (parked→moving).
+    const carId=d.car_id||0;
+    if(carId>0&&carId!==window._fxCar){window._fxCar=carId;window._fxArm=true;}
+    if(s.hud_fx_every&&d.hud_visible&&!window._fxVis)window._fxArm=true;
+    window._fxVis=!!d.hud_visible;
+    const fireFx=()=>{
+      window._fxArm=false;
+      const b=document.body;
+      b.classList.remove("fx");void b.offsetWidth;
+      fireBeams();
+      b.classList.add("fx");
+      clearTimeout(window._fxT);
+      window._fxT=setTimeout(()=>b.classList.remove("fx"),1200);
+    };
+    // Boot: first frame after the HUD page (re)loads — play the entrance
+    // immediately and hold visibility ~2.6s (see --hud-vis below), so
+    // opening the HUD while parked never reads as a broken flash-and-vanish.
+    if(!window._fxBoot){window._fxBoot=1;fireFx();}
+    else if(window._fxArm&&(d.speed_kmh||0)>0.5)fireFx();
+
     // Opacity: container = show/hide only; user opacity dims text elements
     // (see CSS note). Bars/lines/glows always render at full brightness.
     const editOn=document.body.classList.contains("edit-mode");
-    document.documentElement.style.setProperty("--hud-vis",(d.hud_visible||editOn)?"1":"0");
+    const bootHold=(Date.now()-(window._boot0??=Date.now()))<2600;
+    document.documentElement.style.setProperty("--hud-vis",(d.hud_visible||editOn||bootHold)?"1":"0");
     document.documentElement.style.setProperty("--hud-opacity",s.hud_opacity??0.70);
-    $("backdrop").style.opacity=(d.hud_visible||editOn)?(s.hud_backdrop??0.30):"0";
-    if(s.hud_backdrop_radius!==window._bkR||s.hud_backdrop_smooth!==window._bkS){window._bkR=s.hud_backdrop_radius;window._bkS=s.hud_backdrop_smooth;paintBackdrop();}
+    $("backdrop").style.opacity=(d.hud_visible||editOn||bootHold)?(s.hud_backdrop??0.30):"0";
     // Glow auto-adapts to ambient scene brightness (env_luma sampled by the
     // backend around the HUD window): additive glows can't outshine a bright
     // background, so they retract in daylight and open up in the dark.

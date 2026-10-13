@@ -171,9 +171,6 @@ const slipColor = computed(() => {
       <span>{{ (powerKw * 1.341).toFixed(0) }} hp</span>
       <span v-if="boostPsi > 0.1">{{ boostPsi.toFixed(1) }} psi</span>
     </div>
-    <div class="hud-debug-row">
-      PB:{{ pbLoPct.left }}+{{ pbLoPct.width }} rdy={{ props.telemetry?.shift_advice?.ready ? 1 : 0 }} sr={{ props.telemetry?.shift_advice?.shift_rpm }} sl={{ shiftLinePct }} lm={{ limiterPct }}
-    </div>
   </div>
 </template>
 
@@ -256,9 +253,5 @@ const slipColor = computed(() => {
 }
 .hud-info-row {
   display: flex; gap: 12px; font-size: 12px; opacity: 0.85; justify-content: center;
-}
-.hud-debug-row {
-  font-size: 9px; opacity: 0.35; text-align: center; margin-top: 2px;
-  white-space: nowrap; overflow: hidden;
 }
 </style>

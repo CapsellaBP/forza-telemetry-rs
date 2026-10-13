@@ -2,6 +2,8 @@
 use std::collections::HashMap;
 
 const RPM_BIN_SIZE: i32 = 100;
+const BOOST_CEIL_BIN: i32 = 250;      // bucket width of the learned boost ceiling
+const BOOST_CEIL_DECAY: f64 = 0.005;  // per full-throttle packet below the ceiling
 
 pub struct ShiftAdvisor {
     bins: HashMap<i32, (u32, f64, f64)>, // rpm_bin → (count, ema_torque, ema_power)
@@ -14,14 +16,10 @@ pub struct ShiftAdvisor {
     pub(crate) alpha: f64,
     pub(crate) throttle_min: f64,
     pub(crate) skip_ms: u32,
-    pub(crate) power_drop_limit: f64,
     pub(crate) boost_stable_sample: bool,
-    pub(crate) boost_stable_ms: u32,
     pub(crate) boost_stable_tol: f64,
-    last_boost: f64,
-    pub(crate) stable_value: f64,
-    stable_value_set: bool,
-    steady_since: Option<std::time::Instant>,
+    pub(crate) boost_margin: f64,
+    boost_ceil: std::collections::BTreeMap<i32, f64>, // rpm bucket (250) → max full-throttle boost
     boost_stable: bool,
 
     // Per-frame state
@@ -50,9 +48,9 @@ impl Default for ShiftAdvisor {
     fn default() -> Self {
         Self {
             bins: HashMap::new(), sample_count: 0, ready: false, peak_power_rpm: 0.0, locked: false,
-            alpha: 0.25, throttle_min: 0.95, skip_ms: 130, power_drop_limit: 0.0,
-            boost_stable_sample: false, boost_stable_ms: 500, boost_stable_tol: 0.90,
-            last_boost: 0.0, stable_value: 0.0, stable_value_set: false, steady_since: None, boost_stable: false,
+            alpha: 0.25, throttle_min: 0.95, skip_ms: 130,
+            boost_stable_sample: false, boost_stable_tol: 0.90, boost_margin: 0.0,
+            boost_ceil: std::collections::BTreeMap::new(), boost_stable: false,
             skip_until: None, last_gear_sample: None, last_rpm_sample: 0.0,
             idle_rpm: 1500.0, rpm_max: 8000.0, last_urgency: "hold".into(),
             hysteresis_timer: 0, last_gear_adv: None,
@@ -72,8 +70,7 @@ impl ShiftAdvisor {
         self.bins.clear(); self.sample_count = 0; self.peak_power_rpm = 0.0; self.ready = false;
         self.fuel_cut_rpm = 0.0; self.fuel_cut_lo = 0.0; self.fc_peaks.clear(); self.fc_valleys.clear();
         self.fc_peak = 0.0;
-        self.stable_value = 0.0; self.stable_value_set = false;
-        self.last_boost = 0.0; self.steady_since = None; self.boost_stable = false;
+        self.boost_ceil.clear(); self.boost_stable = false;
     }
 
     pub fn to_dict(&self) -> serde_json::Value {
@@ -81,13 +78,16 @@ impl ShiftAdvisor {
         for (k, v) in &self.bins {
             bins_map.insert(k.to_string(), serde_json::json!([v.0, v.1, v.2]));
         }
+        let mut ceil_map = serde_json::Map::new();
+        for (k, v) in &self.boost_ceil {
+            ceil_map.insert(k.to_string(), serde_json::json!((v * 10.0).round() / 10.0));
+        }
         serde_json::json!({
             "bins": bins_map, "sample_count": self.sample_count,
             "peak_power_rpm": self.peak_power_rpm,
             "fuel_cut_rpm": self.fuel_cut_rpm, "fuel_cut_lo": self.fuel_cut_lo,
             "idle_rpm": self.idle_rpm, "rpm_max": self.rpm_max, "ready": self.ready,
-            "locked": self.locked, "stable_value": self.stable_value,
-            "stable_value_set": self.stable_value_set,
+            "locked": self.locked, "boost_ceil": ceil_map,
         })
     }
 
@@ -114,12 +114,34 @@ impl ShiftAdvisor {
         obj.idle_rpm = d.get("idle_rpm").and_then(|v| v.as_f64()).unwrap_or(1500.0);
         obj.rpm_max = d.get("rpm_max").and_then(|v| v.as_f64()).unwrap_or(8000.0);
         obj.ready = d.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
-        if let Some(v) = d.get("stable_value").and_then(|v| v.as_f64()) { obj.stable_value = v; }
-        obj.stable_value_set = d.get("stable_value_set").and_then(|v| v.as_bool()).unwrap_or(false);
+        if let Some(m) = d.get("boost_ceil").and_then(|v| v.as_object()) {
+            for (k, v) in m {
+                if let (Ok(b), Some(p)) = (k.parse::<i32>(), v.as_f64()) { obj.boost_ceil.insert(b, p); }
+            }
+        }
         obj
     }
 
-    pub fn get_curve(&self, band_pct: f64) -> serde_json::Value {
+    /// Piecewise-linear boost ceiling at exact rpm: anchors at bucket centers,
+    /// flat beyond the outermost anchors. None when nothing learned yet.
+    fn boost_ref_at(&self, rpm: f64) -> Option<f64> {
+        if self.boost_ceil.is_empty() { return None; }
+        let x = rpm - BOOST_CEIL_BIN as f64 / 2.0;
+        let xi = x.floor() as i32;
+        let lo = self.boost_ceil.range(..=xi).next_back();
+        let hi = self.boost_ceil.range(xi..).next();
+        match (lo, hi) {
+            (Some((&lk, &lv)), Some((&hk, &hv))) => {
+                if hk == lk { return Some(lv); }
+                Some(lv + (hv - lv) * (x - lk as f64) / (hk - lk) as f64)
+            }
+            (Some((_, &lv)), None) => Some(lv),
+            (None, Some((_, &hv))) => Some(hv),
+            (None, None) => None,
+        }
+    }
+
+    pub fn get_curve(&self, band_pct: f64, rpm: f64) -> serde_json::Value {
         let mut rpm_keys: Vec<i32> = self.bins.keys().copied().collect();
         rpm_keys.sort();
         let mut torque_pts = Vec::new();
@@ -160,7 +182,7 @@ impl ShiftAdvisor {
             "power_band_lo": band_lo, "power_band_hi": band_hi,
             "ready": self.ready, "samples": self.sample_count,
             "locked": self.locked, "boost_stable": self.boost_stable,
-            "stable_value": self.stable_value, "stable_value_set": self.stable_value_set,
+            "boost_ref": self.boost_ref_at(rpm).map(|v| (v * 10.0).round() / 10.0),
         })
     }
 
@@ -175,23 +197,22 @@ impl ShiftAdvisor {
         self.idle_rpm = self.idle_rpm.max(500.0);
         self.rpm_max = self.rpm_max.max(1000.0);
 
-        // Boost stability: detect sustained level via exact frame-to-frame match,
-        // confirmed by wall-clock duration (frame-rate independent)
+        // Boost ceiling: per-rpm-bucket max of full-throttle boost, learned from
+        // the car itself (snap up on proof, slow drift down on sustained lower
+        // readings — e.g. after a retune). Gate follows the ceiling lerped to the
+        // exact rpm, so a centrifugal blower's boost ramp is judged per-rpm while
+        // a turbo plateau degenerates to a single global baseline. NA cars settle
+        // at 0 and pass any non-negative boost, same as before.
         if self.boost_stable_sample {
-            let same = (boost * 10.0).round() == (self.last_boost * 10.0).round();
-            if same {
-                if self.steady_since.is_none() { self.steady_since = Some(std::time::Instant::now()); }
-                if self.steady_since.is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(self.boost_stable_ms as u64))
-                    && boost >= 0.0 && speed > 0.0 {
-                    self.stable_value = (boost * 10.0).round() / 10.0;
-                    self.stable_value_set = true;
-                }
-            } else {
-                self.steady_since = None;
+            if throttle >= self.throttle_min && speed > 0.0 {
+                let b = boost.max(0.0);
+                let k = (rpm as i32 / BOOST_CEIL_BIN) * BOOST_CEIL_BIN;
+                let e = self.boost_ceil.entry(k).or_insert(b);
+                if b > *e { *e = b; } else { *e += (b - *e) * BOOST_CEIL_DECAY; }
             }
-            // Pass if boost matches established baseline
-            self.boost_stable = boost >= self.stable_value * self.boost_stable_tol;
-            self.last_boost = boost;
+            let gate = (self.boost_ref_at(rpm).unwrap_or(0.0) * self.boost_stable_tol
+                - self.boost_margin).max(0.0);
+            self.boost_stable = boost >= gate;
         } else {
             self.boost_stable = true;
         }
@@ -253,16 +274,12 @@ impl ShiftAdvisor {
         {
             let b = bin(rpm);
             if let Some((cnt, ema_tq, ema_pw)) = self.bins.get_mut(&b) {
-                if *cnt >= 3 && *ema_pw > 0.0 && power < *ema_pw * self.power_drop_limit {
-                    // Reject dirty data
-                } else {
-                    let a = self.alpha;
-                    *ema_tq = *ema_tq * (1.0 - a) + torque * a;
-                    *ema_pw = *ema_pw * (1.0 - a) + power * a;
-                    *cnt += 1;
-                    self.sample_count += 1;
-                    if self.sample_count % 60 == 0 { self.recalc(); }
-                }
+                let a = self.alpha;
+                *ema_tq = *ema_tq * (1.0 - a) + torque * a;
+                *ema_pw = *ema_pw * (1.0 - a) + power * a;
+                *cnt += 1;
+                self.sample_count += 1;
+                if self.sample_count % 60 == 0 { self.recalc(); }
             } else {
                 self.bins.insert(b, (1, torque, power));
                 self.sample_count += 1;
@@ -437,20 +454,66 @@ mod tests {
         assert_eq!(a.fuel_cut_rpm, 7700.0);
     }
 
+    /// One full-throttle pull 1000→7000 rpm at ~61 Hz, boost follows `ramp(rpm)`.
+    fn feed_pull(adv: &mut ShiftAdvisor, ramp: impl Fn(f64) -> f64) {
+        for i in 0..244 {
+            let rpm = 1000.0 + 6000.0 * i as f64 / 243.0;
+            adv.feed(rpm, 400.0, 200000.0, 1.0, 3, ramp(rpm), 30.0, 0.05);
+        }
+    }
+
     #[test]
-    fn boost_stable_ms_confirms_after_window() {
+    fn boost_ceiling_learns_centrifugal_ramp() {
         let mut a = ShiftAdvisor::new();
         a.skip_ms = 0;
         a.boost_stable_sample = true;
-        a.boost_stable_ms = 50;
-        // Steady boost inside the window — baseline not established yet
-        feed_n(&mut a, 3, 30.0, 0.05);
-        assert!(!a.stable_value_set);
-        // Past the window — baseline confirmed
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        for _ in 0..3 {
-            a.feed(5000.0, 400.0, 200000.0, 1.0, 3, 0.0, 30.0, 0.05);
-        }
-        assert!(a.stable_value_set);
+        // Centrifugal SC: boost ramps linearly with rpm, no plateau to time-lock onto
+        let ramp = |rpm: f64| ((rpm - 1000.0) / 1000.0 * 2.15).max(0.0);
+        feed_pull(&mut a, ramp);
+        // Whole range sampled, low rpm included (old timer gate lost all of it)
+        assert!(a.bins.contains_key(&1500));
+        assert!(a.bins.contains_key(&3500));
+        assert!(a.sample_count > 200);
+        // Traction-control dip (deep vacuum at full pedal) stays rejected
+        let before = a.sample_count;
+        for _ in 0..10 { a.feed(3000.0, 50.0, 30000.0, 1.0, 3, -7.0, 30.0, 0.05); }
+        assert_eq!(a.sample_count, before);
+    }
+
+    #[test]
+    fn boost_ceiling_turbo_plateau_blocks_spool() {
+        let mut a = ShiftAdvisor::new();
+        a.skip_ms = 0;
+        a.boost_stable_sample = true;
+        // Plateau learned at 36 psi
+        for _ in 0..20 { a.feed(4000.0, 400.0, 300000.0, 1.0, 3, 36.0, 30.0, 0.05); }
+        let before = a.sample_count;
+        // Later pull mid-spool at the same rpm: 12 psi < 36*0.98-0.3 — rejected
+        for _ in 0..10 { a.feed(4000.0, 400.0, 300000.0, 1.0, 3, 12.0, 30.0, 0.05); }
+        assert_eq!(a.sample_count, before);
+    }
+
+    #[test]
+    fn boost_ceiling_drifts_down_on_sustained_lower_boost() {
+        let mut a = ShiftAdvisor::new();
+        a.skip_ms = 0;
+        a.boost_stable_sample = true;
+        for _ in 0..10 { a.feed(6000.0, 400.0, 300000.0, 1.0, 3, 12.9, 30.0, 0.05); }
+        // Retuned lower: sustained full throttle at 8 psi walks the ceiling down
+        for _ in 0..400 { a.feed(6000.0, 400.0, 300000.0, 1.0, 3, 8.0, 30.0, 0.05); }
+        let c = a.boost_ref_at(6000.0).unwrap();
+        assert!(c < 9.5, "ceiling should drift toward 8, got {c}");
+        assert!(c > 7.9);
+    }
+
+    #[test]
+    fn boost_gate_na_zero_ceiling() {
+        let mut a = ShiftAdvisor::new();
+        a.skip_ms = 0;
+        a.boost_stable_sample = true;
+        // NA car: boost pinned at 0, ceiling settles at 0, sampling passes
+        for _ in 0..20 { a.feed(5000.0, 400.0, 200000.0, 1.0, 3, 0.0, 30.0, 0.05); }
+        assert!(a.sample_count > 0);
+        assert_eq!(a.boost_ref_at(5000.0), Some(0.0));
     }
 }
